@@ -18,7 +18,8 @@ fn main() {
 
     let mut indent: Vec<TreeLevel> = Vec::new();
     println!("{}", cli.path);
-    print_paths(cli.path.as_str(), &mut indent, &mut io::stdout());
+
+    print_paths(&cli.path, &mut indent, &mut io::stdout());
 
     // let mut output: Vec<u8> = Vec::new();
     // print_paths(cli.path.as_str(), &mut indent, &mut output);

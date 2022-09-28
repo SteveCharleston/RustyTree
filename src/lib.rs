@@ -1,6 +1,7 @@
 use std::fs;
 use std::fs::DirEntry;
 use std::io::Write;
+use std::path::Path;
 const INDENT_SIGN: &str = "  ";
 const TREE_SIGN: &str = "│ ";
 const INNER_BRANCH: &str = "├─";
@@ -20,7 +21,7 @@ pub struct TreeEntry {
     levels: Vec<TreeLevel>,
 }
 
-fn read_dir_sorted(path: &str) -> Vec<DirEntry> {
+fn read_dir_sorted(path: &impl AsRef<Path>) -> Vec<DirEntry> {
     let mut paths: Vec<_> = fs::read_dir(path).unwrap().map(|r| r.unwrap()).collect();
 
     paths.sort_by_key(|entry| entry.path().to_str().unwrap().to_lowercase());
@@ -45,7 +46,11 @@ fn render_tree_level(entry: &TreeEntry) -> String {
     rendered_entry
 }
 
-pub fn print_paths(path: &str, indent_level: &mut Vec<TreeLevel>, output: &mut impl Write) {
+pub fn print_paths(
+    path: &impl AsRef<Path>,
+    indent_level: &mut Vec<TreeLevel>,
+    output: &mut impl Write,
+) {
     let entries = read_dir_sorted(path);
     for (i, entry) in entries.iter().enumerate() {
         let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
@@ -67,7 +72,7 @@ pub fn print_paths(path: &str, indent_level: &mut Vec<TreeLevel>, output: &mut i
         output.write_all(tree_level.as_bytes()).unwrap();
 
         if entry.path().is_dir() {
-            print_paths(entry.path().to_str().unwrap(), indent_level, output);
+            print_paths(&entry.path(), indent_level, output);
         }
         indent_level.pop();
     }
@@ -86,7 +91,7 @@ mod tests {
         let mut output: Vec<u8> = Vec::new();
         let mut indent: Vec<TreeLevel> = Vec::new();
         println!("tmpdir: {:?}", dir);
-        print_paths(dir.path().to_str().unwrap(), &mut indent, &mut output);
+        print_paths(&dir.path(), &mut indent, &mut output);
         let output_string = String::from_utf8_lossy(&output);
         println!("{}", output_string);
         assert_eq!(output_string, expected_output_standard());
