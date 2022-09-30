@@ -1,8 +1,10 @@
-use std::sync::{Arc, Mutex};
 use std::fs;
 use std::fs::DirEntry;
 use std::io::Write;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::thread::JoinHandle;
 const INDENT_SIGN: &str = "  ";
 const TREE_SIGN: &str = "│ ";
 const INNER_BRANCH: &str = "├─";
@@ -64,10 +66,10 @@ fn print_paths<W: Write + Send + 'static + Sync>(
 ) {
     // let handles: Vec<JoinHandle<()>> = Vec::new();
     let entries = read_dir_sorted(path);
+    let mut handles: Vec<JoinHandle<()>> = Vec::new();
     for (i, entry) in entries.iter().enumerate() {
         let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
         let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
-
 
         if i == entries.len() - 1 {
             current_indent.push(TreeLevel::TreeFinalBranch);
@@ -83,15 +85,25 @@ fn print_paths<W: Write + Send + 'static + Sync>(
         };
         let tree_level = render_tree_level(&tree_entry);
 
-        output.lock().unwrap().write_all(tree_level.as_bytes()).unwrap();
+        output
+            .lock()
+            .unwrap()
+            .write_all(tree_level.as_bytes())
+            .unwrap();
 
         let mut output_next = Arc::clone(output);
 
         if entry.path().is_dir() {
-            print_paths(&entry.path(), &recurisve_indent, &mut output_next);
-            // thread::spawn(|| print_paths(&entry.path(), &recurisve_indent, output));
+            // print_paths(&entry.path(), &recurisve_indent, &mut output_next);
+            let child_path = entry.path();
+            handles.push(thread::spawn(move || print_paths(&child_path, &recurisve_indent, &mut output_next)));
+            // handles.push(handle);
         }
         // indent_level.pop();
+    }
+
+    for handle in handles.into_iter() {
+        handle.join().unwrap();
     }
 }
 
