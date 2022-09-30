@@ -1,8 +1,10 @@
-use std::sync::{Arc, Mutex};
 use std::fs;
 use std::fs::DirEntry;
 use std::io::Write;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::thread::JoinHandle;
 const INDENT_SIGN: &str = "  ";
 const TREE_SIGN: &str = "│ ";
 const INNER_BRANCH: &str = "├─";
@@ -53,21 +55,24 @@ pub fn tree<W: Write + Send + 'static + Sync>(
     output: W,
 ) {
     let mut threadsafe_output = Arc::new(Mutex::new(output));
+    let new_output = Arc::clone(&threadsafe_output);
 
-    print_paths(path, indent_level, &mut threadsafe_output);
+    let out = print_paths(path, indent_level, &mut threadsafe_output);
+    new_output.lock().unwrap().write_all(out.as_bytes()).unwrap();
 }
 
 fn print_paths<W: Write + Send + 'static + Sync>(
     path: &impl AsRef<Path>,
     indent_level: &[TreeLevel],
-    output: &mut Arc<Mutex<W>>,
-) {
-    // let handles: Vec<JoinHandle<()>> = Vec::new();
+    writer: &mut Arc<Mutex<W>>,
+) -> String {
+    let mut handles: Vec<JoinHandle<String>> = Vec::new();
+    let mut out = String::new();
+
     let entries = read_dir_sorted(path);
     for (i, entry) in entries.iter().enumerate() {
         let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
         let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
-
 
         if i == entries.len() - 1 {
             current_indent.push(TreeLevel::TreeFinalBranch);
@@ -81,18 +86,23 @@ fn print_paths<W: Write + Send + 'static + Sync>(
             name: entry.file_name().into_string().unwrap(),
             levels: current_indent.to_vec(),
         };
-        let tree_level = render_tree_level(&tree_entry);
+        handles.push(thread::spawn(move || render_tree_level(&tree_entry)));
 
-        output.lock().unwrap().write_all(tree_level.as_bytes()).unwrap();
-
-        let mut output_next = Arc::clone(output);
+        let mut writer_next = Arc::clone(writer);
 
         if entry.path().is_dir() {
-            print_paths(&entry.path(), &recurisve_indent, &mut output_next);
-            // thread::spawn(|| print_paths(&entry.path(), &recurisve_indent, output));
+            let child_path = entry.path();
+            handles.push(thread::spawn(move || {
+                print_paths(&child_path, &recurisve_indent, &mut writer_next)
+            }));
         }
-        // indent_level.pop();
     }
+
+    for handle in handles.into_iter() {
+        out += handle.join().unwrap().as_str();
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -109,12 +119,12 @@ mod tests {
         let mut indent: Vec<TreeLevel> = Vec::new();
 
         println!("tmpdir: {:?}", dir);
-        print_paths(&dir.path(), &mut indent, &mut output);
+        let out = print_paths(&dir.path(), &mut indent, &mut output);
 
         let unpacked_output = output.lock().unwrap();
         let output_string = String::from_utf8_lossy(&unpacked_output);
         println!("{}", output_string);
-        assert_eq!(output_string, expected_output_standard());
+        assert_eq!(out, expected_output_standard());
     }
 
     #[test]
