@@ -1,5 +1,5 @@
 use clap::Parser;
-use rustytree::{print_paths, TreeLevel};
+use rustytree::{tree, TreeLevel};
 use std::io;
 
 #[derive(Debug, Parser)]
@@ -16,13 +16,14 @@ fn main() {
     let cli = Cli::parse();
     // println!("{:?}", cli);
 
-    let mut indent: Vec<TreeLevel> = Vec::new();
+    let indent: Vec<TreeLevel> = Vec::new();
     println!("{}", cli.path);
 
-    print_paths(&cli.path, &mut indent, &mut io::stdout());
+    let output = io::stdout();
+    tree(&cli.path, &indent, output);
 
     // let mut output: Vec<u8> = Vec::new();
-    // print_paths(cli.path.as_str(), &mut indent, &mut output);
+    // tree(cli.path.as_str(), &mut indent, &mut output);
     // let output_string = String::from_utf8_lossy(&output);
     // println!("{}", output_string);
 }

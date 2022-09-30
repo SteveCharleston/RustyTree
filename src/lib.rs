@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use std::fs;
 use std::fs::DirEntry;
 use std::io::Write;
@@ -46,21 +47,34 @@ fn render_tree_level(entry: &TreeEntry) -> String {
     rendered_entry
 }
 
-pub fn print_paths(
+pub fn tree<W: Write + Send + 'static + Sync>(
     path: &impl AsRef<Path>,
-    indent_level: &mut Vec<TreeLevel>,
-    output: &mut impl Write,
+    indent_level: &[TreeLevel],
+    output: W,
 ) {
+    let mut threadsafe_output = Arc::new(Mutex::new(output));
+
+    print_paths(path, indent_level, &mut threadsafe_output);
+}
+
+fn print_paths<W: Write + Send + 'static + Sync>(
+    path: &impl AsRef<Path>,
+    indent_level: &[TreeLevel],
+    output: &mut Arc<Mutex<W>>,
+) {
+    // let handles: Vec<JoinHandle<()>> = Vec::new();
     let entries = read_dir_sorted(path);
     for (i, entry) in entries.iter().enumerate() {
         let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
+        let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
+
 
         if i == entries.len() - 1 {
             current_indent.push(TreeLevel::TreeFinalBranch);
-            indent_level.push(TreeLevel::Indent);
+            recurisve_indent.push(TreeLevel::Indent);
         } else {
             current_indent.push(TreeLevel::TreeBranch);
-            indent_level.push(TreeLevel::TreeBar);
+            recurisve_indent.push(TreeLevel::TreeBar);
         };
 
         let tree_entry = TreeEntry {
@@ -69,12 +83,15 @@ pub fn print_paths(
         };
         let tree_level = render_tree_level(&tree_entry);
 
-        output.write_all(tree_level.as_bytes()).unwrap();
+        output.lock().unwrap().write_all(tree_level.as_bytes()).unwrap();
+
+        let mut output_next = Arc::clone(output);
 
         if entry.path().is_dir() {
-            print_paths(&entry.path(), indent_level, output);
+            print_paths(&entry.path(), &recurisve_indent, &mut output_next);
+            // thread::spawn(|| print_paths(&entry.path(), &recurisve_indent, output));
         }
-        indent_level.pop();
+        // indent_level.pop();
     }
 }
 
@@ -88,11 +105,14 @@ mod tests {
     #[test]
     fn test_print_paths() {
         let dir = create_directory_tree();
-        let mut output: Vec<u8> = Vec::new();
+        let mut output: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let mut indent: Vec<TreeLevel> = Vec::new();
+
         println!("tmpdir: {:?}", dir);
         print_paths(&dir.path(), &mut indent, &mut output);
-        let output_string = String::from_utf8_lossy(&output);
+
+        let unpacked_output = output.lock().unwrap();
+        let output_string = String::from_utf8_lossy(&unpacked_output);
         println!("{}", output_string);
         assert_eq!(output_string, expected_output_standard());
     }
