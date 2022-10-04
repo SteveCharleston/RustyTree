@@ -2,7 +2,7 @@ use std::fs;
 use std::fs::DirEntry;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -58,20 +58,31 @@ pub fn tree<W: Write + Send + 'static + Sync>(
     let mut threadsafe_output = Arc::new(Mutex::new(output));
     let new_output = Arc::clone(&threadsafe_output);
 
-    let out = print_paths(path, indent_level, &mut threadsafe_output);
-    new_output.lock().unwrap().write_all(out.as_bytes()).unwrap();
+    let cvar = Arc::new((Mutex::new(0u32), Condvar::new()));
+    let threaded_cvar = Arc::clone(&cvar);
+
+    let out = print_paths(path, indent_level, &mut threadsafe_output, 0, threaded_cvar);
+    new_output
+        .lock()
+        .unwrap()
+        .write_all(out.as_bytes())
+        .unwrap();
 }
 
 fn print_paths<W: Write + Send + 'static + Sync>(
     path: &impl AsRef<Path>,
     indent_level: &[TreeLevel],
     writer: &mut Arc<Mutex<W>>,
+    index: u32,
+    parent_cvar: Arc<(Mutex<u32>, Condvar)>,
 ) -> String {
-    let mut handles: Vec<JoinHandle<String>> = Vec::new();
+    let mut handles: Vec<(u32, JoinHandle<String>)> = Vec::new();
+    let cvar = Arc::new((Mutex::new(0u32), Condvar::new()));
     let mut out = String::new();
 
     let entries = read_dir_sorted(path);
     for (i, entry) in entries.iter().enumerate() {
+        let thread_cvar = Arc::clone(&cvar);
         let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
         let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
 
@@ -83,14 +94,14 @@ fn print_paths<W: Write + Send + 'static + Sync>(
             recurisve_indent.push(TreeLevel::TreeBar);
         };
 
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(20));
 
         let tree_entry = TreeEntry {
             name: entry.file_name().into_string().unwrap(),
             levels: current_indent.to_vec(),
         };
         // let tree_level = render_tree_level(&tree_entry);
-        handles.push(thread::spawn(move || render_tree_level(&tree_entry)));
+        handles.push((i as u32, thread::spawn(move || render_tree_level(&tree_entry))));
 
         // writer
         //     .lock()
@@ -104,16 +115,37 @@ fn print_paths<W: Write + Send + 'static + Sync>(
         if entry.path().is_dir() {
             // print_paths(&entry.path(), &recurisve_indent, &mut output_next);
             let child_path = entry.path();
-            handles.push(thread::spawn(move || {
-                print_paths(&child_path, &recurisve_indent, &mut writer_next)
-            }));
+            handles.push((i as u32, thread::spawn(move || {
+                print_paths(&child_path, &recurisve_indent, &mut writer_next, i as u32, thread_cvar)
+            })));
         }
     }
 
-    for handle in handles.into_iter() {
-        out += handle.join().unwrap().as_str();
-    }
+    let (parent_num_mutex, parent_unpacked_cvar) = &*parent_cvar;
+    println!("before wait -- index: {index}, num_mutex: {:?}", parent_num_mutex);
+    //let mut parent_num = parent_unpacked_cvar.wait_while(parent_num_mutex.lock().unwrap(), |cur_idx| *cur_idx < index).unwrap();
+    let mut parent_num = parent_unpacked_cvar.wait_while(parent_num_mutex.lock().unwrap(), |cur_idx| *cur_idx != index).unwrap();
+    println!("after wait");
 
+    for (i, handle) in handles.into_iter() {
+        // block current cvar, that is handled by children, here
+        // out += format!("{i}: ").as_str();
+        //let (num_mutex, unpacked_cvar) = &*cvar;
+        //println!("before wait -- index: {index}, i: {i}, num_mutex: {:?}", num_mutex);
+        //unpacked_cvar.wait_while(num_mutex.lock().unwrap(), |cur_idx| *cur_idx != index).unwrap();
+        //println!("after wait");
+        println!("loop {i} -- handle {:?}", handle);
+        out += handle.join().unwrap().as_str().trim_end();
+        out += format!("\t:{i}\n").as_str();
+    }
+    println!("{out}");
+    // writer.lock().unwrap().write_all(out.as_bytes()).unwrap();
+
+    // increase parent cvar here
+    // let mut parent_num = parent_num_mutex.lock().unwrap();
+    println!("parent num: {}", parent_num);
+    *parent_num += 1;
+    parent_unpacked_cvar.notify_one();
     out
 }
 
