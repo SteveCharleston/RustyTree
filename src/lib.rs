@@ -2,7 +2,7 @@ use std::fs;
 use std::fs::DirEntry;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -11,7 +11,7 @@ const TREE_SIGN: &str = "│ ";
 const INNER_BRANCH: &str = "├─";
 const FINAL_BRANCH: &str = "└─";
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum TreeLevel {
     Indent,
     TreeBar,
@@ -19,7 +19,7 @@ pub enum TreeLevel {
     TreeFinalBranch,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TreeEntry {
     name: String,
     levels: Vec<TreeLevel>,
@@ -58,22 +58,33 @@ pub fn tree<W: Write + Send + 'static + Sync>(
     let mut threadsafe_output = Arc::new(Mutex::new(output));
     let new_output = Arc::clone(&threadsafe_output);
 
-    let out = print_paths(path, indent_level, &mut threadsafe_output);
-    new_output.lock().unwrap().write_all(out.as_bytes()).unwrap();
+    let pair = Arc::new((Mutex::new(0), Condvar::new()));
+
+    let out = print_paths(path, indent_level, &mut threadsafe_output, 0, pair);
+    new_output
+        .lock()
+        .unwrap()
+        .write_all(out.as_bytes())
+        .unwrap();
 }
 
 fn print_paths<W: Write + Send + 'static + Sync>(
     path: &impl AsRef<Path>,
     indent_level: &[TreeLevel],
     writer: &mut Arc<Mutex<W>>,
+    index: u32,
+    parent_pair: Arc<(Mutex<u32>, Condvar)>,
 ) -> String {
     let mut handles: Vec<JoinHandle<String>> = Vec::new();
     let mut out = String::new();
+    let pair = Arc::new((Mutex::new(0), Condvar::new()));
 
+    let mut count = 0;
     let entries = read_dir_sorted(path);
     for (i, entry) in entries.iter().enumerate() {
         let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
         let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
+        let pair_clone = Arc::clone(&pair);
 
         if i == entries.len() - 1 {
             current_indent.push(TreeLevel::TreeFinalBranch);
@@ -83,14 +94,35 @@ fn print_paths<W: Write + Send + 'static + Sync>(
             recurisve_indent.push(TreeLevel::TreeBar);
         };
 
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(25));
 
         let tree_entry = TreeEntry {
             name: entry.file_name().into_string().unwrap(),
             levels: current_indent.to_vec(),
         };
-        // let tree_level = render_tree_level(&tree_entry);
-        handles.push(thread::spawn(move || render_tree_level(&tree_entry)));
+
+        //println!("count: {}, TreeEntry: {:?}, parent_index: {}, cvar: {:?}", count, tree_entry, index, pair.0);
+        let pair_renderer = Arc::clone(&pair);
+        let writer_renderer = Arc::clone(writer);
+        handles.push(thread::spawn(move || {
+            let (lock, cvar) = &*pair_renderer;
+            let mut thread_index = cvar
+                .wait_while(lock.lock().unwrap(), |cur_index| *cur_index != count)
+                .unwrap();
+            let render_out = render_tree_level(&tree_entry);
+            writer_renderer
+                .lock()
+                .unwrap()
+                .write_all(render_out.as_bytes())
+                .unwrap();
+
+            *thread_index += 1;
+            cvar.notify_all();
+            String::new()
+        }));
+        count += 1;
+
+        //handles.pop().unwrap().join().unwrap();
 
         // writer
         //     .lock()
@@ -104,17 +136,36 @@ fn print_paths<W: Write + Send + 'static + Sync>(
         if entry.path().is_dir() {
             // print_paths(&entry.path(), &recurisve_indent, &mut output_next);
             let child_path = entry.path();
+            //println!("count: {}, child_path: {:?}, parent_index: {}, cvar: {:?}", count, child_path, index, pair.0);
             handles.push(thread::spawn(move || {
-                print_paths(&child_path, &recurisve_indent, &mut writer_next)
+                print_paths(
+                    &child_path,
+                    &recurisve_indent,
+                    &mut writer_next,
+                    count,
+                    pair_clone,
+                )
             }));
+            //handles.pop().unwrap().join().unwrap();
+            count += 1;
         }
     }
 
+    let (lock, cvar) = &*parent_pair;
+    let mut thread_index = cvar
+        .wait_while(lock.lock().unwrap(), |cur_index| *cur_index != index)
+        .unwrap();
     for handle in handles.into_iter() {
         out += handle.join().unwrap().as_str();
     }
 
-    out
+    writer.lock().unwrap().write_all(out.as_bytes()).unwrap();
+
+    *thread_index += 1;
+    cvar.notify_all();
+
+    //out
+    String::new()
 }
 
 #[cfg(test)]
