@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 clap = { version = "3.2", features = ["derive", "wrap_help"] }
 tempfile = "3"
+rayon = "1.5"

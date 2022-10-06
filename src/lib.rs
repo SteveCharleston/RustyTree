@@ -1,10 +1,9 @@
+use rayon::prelude::*;
 use std::fs;
 use std::fs::DirEntry;
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::thread::JoinHandle;
 const INDENT_SIGN: &str = "  ";
 const TREE_SIGN: &str = "│ ";
 const INNER_BRANCH: &str = "├─";
@@ -58,7 +57,11 @@ pub fn tree<W: Write + Send + 'static + Sync>(
     let new_output = Arc::clone(&threadsafe_output);
 
     let out = print_paths(path, indent_level, &mut threadsafe_output);
-    new_output.lock().unwrap().write_all(out.as_bytes()).unwrap();
+    new_output
+        .lock()
+        .unwrap()
+        .write_all(out.as_bytes())
+        .unwrap();
 }
 
 fn print_paths<W: Write + Send + 'static + Sync>(
@@ -66,43 +69,42 @@ fn print_paths<W: Write + Send + 'static + Sync>(
     indent_level: &[TreeLevel],
     writer: &mut Arc<Mutex<W>>,
 ) -> String {
-    let mut handles: Vec<JoinHandle<String>> = Vec::new();
-    let mut out = String::new();
-
     let entries = read_dir_sorted(path);
-    for (i, entry) in entries.iter().enumerate() {
-        let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
-        let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
+    let entries_len = entries.len();
+    entries
+        .into_par_iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let mut out = String::new();
+            let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
+            let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
 
-        if i == entries.len() - 1 {
-            current_indent.push(TreeLevel::TreeFinalBranch);
-            recurisve_indent.push(TreeLevel::Indent);
-        } else {
-            current_indent.push(TreeLevel::TreeBranch);
-            recurisve_indent.push(TreeLevel::TreeBar);
-        };
+            if i == entries_len - 1 {
+                current_indent.push(TreeLevel::TreeFinalBranch);
+                recurisve_indent.push(TreeLevel::Indent);
+            } else {
+                current_indent.push(TreeLevel::TreeBranch);
+                recurisve_indent.push(TreeLevel::TreeBar);
+            };
 
-        let tree_entry = TreeEntry {
-            name: entry.file_name().into_string().unwrap(),
-            levels: current_indent.to_vec(),
-        };
-        handles.push(thread::spawn(move || render_tree_level(&tree_entry)));
+            let tree_entry = TreeEntry {
+                name: entry.file_name().into_string().unwrap(),
+                levels: current_indent.to_vec(),
+            };
+            let tree_level = render_tree_level(&tree_entry);
 
-        let mut writer_next = Arc::clone(writer);
+            out += tree_level.as_str();
 
-        if entry.path().is_dir() {
-            let child_path = entry.path();
-            handles.push(thread::spawn(move || {
-                print_paths(&child_path, &recurisve_indent, &mut writer_next)
-            }));
-        }
-    }
+            let mut writer_next = Arc::clone(writer);
 
-    for handle in handles.into_iter() {
-        out += handle.join().unwrap().as_str();
-    }
+            if entry.path().is_dir() {
+                out += print_paths(&entry.path(), &recurisve_indent, &mut writer_next).as_str()
+            }
 
-    out
+            out
+        })
+        .collect::<Vec<String>>()
+        .join("")
 }
 
 #[cfg(test)]
