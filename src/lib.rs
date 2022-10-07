@@ -9,11 +9,9 @@
 #![warn(clippy::missing_docs_in_private_items)]
 
 use rayon::prelude::*;
-use std::fs;
 use std::fs::DirEntry;
-use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::{fs, io};
 
 /// Indentation if no parent exists
 const INDENT_SIGN: &str = "  ";
@@ -50,15 +48,25 @@ struct TreeEntry {
     levels: Vec<TreeLevel>,
 }
 
-/// Read the directory for the given Path.
+/// Read the directory for the given Path and sort the files alphabetically.
 ///
 /// Collect all entries in the given directory and sort them in alphabetical order. Do this in a
 /// case insensitive manner.
-fn read_dir_sorted(path: &impl AsRef<Path>) -> Vec<DirEntry> {
-    let mut paths: Vec<_> = fs::read_dir(path).unwrap().map(|r| r.unwrap()).collect();
+///
+/// # Errors
+///
+/// Will return an error in the following situations, but not limited to:
+/// * The provided `path` doesn't exist.
+/// * The process lacks permissions to view the contens.
+/// * The `path` points at a non-directory file.
+fn read_dir_sorted(path: &impl AsRef<Path>) -> Result<Vec<DirEntry>, io::Error> {
+    // dbg!(PathBuf::from(path.as_ref()));
+    let mut paths: Vec<_> = fs::read_dir(path)?
+        .map(|r| r.expect("Reading file inside a directory")) // not expected to normally fail
+        .collect();
 
-    paths.sort_by_key(|entry| entry.path().to_str().unwrap().to_lowercase());
-    paths
+    paths.sort_by_key(|entry| entry.path().to_string_lossy().to_lowercase());
+    Ok(paths)
 }
 
 /// Render the given TreeEntry into a string representation.
@@ -86,26 +94,23 @@ fn render_tree_level(entry: &TreeEntry) -> String {
 /// recursively. Render all the files into a tree like string representation. Each directory visit
 /// is done in a thread and also some expensive computations might be executed which will also be
 /// threaded to distribute the load amongst the available cores.
-pub fn tree<W: Write + Send + 'static + Sync>(path: &impl AsRef<Path>, output: W) {
+pub fn tree(path: &impl AsRef<Path>) -> String {
     let indent_level: Vec<TreeLevel> = Vec::new();
-    let mut threadsafe_output = Arc::new(Mutex::new(output));
-    let new_output = Arc::clone(&threadsafe_output);
 
-    let out = print_paths(path, &indent_level, &mut threadsafe_output);
-    new_output
-        .lock()
-        .unwrap()
-        .write_all(out.as_bytes())
-        .unwrap();
+    print_paths(path, &indent_level)
 }
 
 /// Actually do the work of computing the tree.
-fn print_paths<W: Write + Send + 'static + Sync>(
+fn print_paths(
     path: &impl AsRef<Path>,
     indent_level: &[TreeLevel],
-    writer: &mut Arc<Mutex<W>>,
 ) -> String {
-    let entries = read_dir_sorted(path);
+    let entries = match read_dir_sorted(path) {
+        Ok(entries) => entries,
+        // return nothing since we don't have anything to display. Could be used to display such
+        // information in future.
+        Err(_) => return "".to_string(),
+    };
     let entries_len = entries.len();
     entries
         .into_par_iter()
@@ -124,17 +129,16 @@ fn print_paths<W: Write + Send + 'static + Sync>(
             };
 
             let tree_entry = TreeEntry {
-                name: entry.file_name().into_string().unwrap(),
+                name: entry.file_name().to_string_lossy().to_string(),
                 levels: current_indent.to_vec(),
             };
             let tree_level = render_tree_level(&tree_entry);
 
             out += tree_level.as_str();
 
-            let mut writer_next = Arc::clone(writer);
 
             if entry.path().is_dir() {
-                out += print_paths(&entry.path(), &recurisve_indent, &mut writer_next).as_str()
+                out += print_paths(&entry.path(), &recurisve_indent).as_str()
             }
 
             out
@@ -148,22 +152,32 @@ mod tests {
     use super::*;
     use std::fs;
     use std::fs::File;
+    use std::os::unix::prelude::PermissionsExt;
     use tempfile;
 
     #[test]
     /// Verify that a generated filesystem tree is as expected.
     fn test_print_paths() {
         let dir = create_directory_tree();
-        let mut output: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let mut indent: Vec<TreeLevel> = Vec::new();
 
         println!("tmpdir: {:?}", dir);
-        let out = print_paths(&dir.path(), &mut indent, &mut output);
+        let out = print_paths(&dir.path(), &mut indent);
 
-        let unpacked_output = output.lock().unwrap();
-        let output_string = String::from_utf8_lossy(&unpacked_output);
-        println!("{}", output_string);
+        println!("{}", out);
         assert_eq!(out, expected_output_standard());
+    }
+
+    #[test]
+    /// Verfiy that missing read permissions are handled gracefully.
+    fn test_no_read_permissions() {
+        let mut indent: Vec<TreeLevel> = Vec::new();
+
+        let dir = create_directoy_no_permissions();
+        let out = print_paths(&dir.path(), &mut indent);
+
+        println!("{}", out);
+        assert_eq!(out, "└─root\n");
     }
 
     #[test]
@@ -183,7 +197,7 @@ mod tests {
         fs::create_dir(dir.join("does")).unwrap();
         fs::create_dir(dir.join("tres")).unwrap();
 
-        let entries = read_dir_sorted(&dir);
+        let entries = read_dir_sorted(&dir).unwrap();
 
         for (i, entry) in entries.iter().enumerate() {
             println!("{:?} -- {}", entry.file_name(), sorted_dirs[i]);
@@ -234,6 +248,26 @@ mod tests {
             assert_eq!(render_tree_level(&entry), entry_presentation);
             print!("{}", render_tree_level(&entry));
         }
+    }
+
+    /// Create a directory tree with a directory for which access is restricted.
+    fn create_directoy_no_permissions() -> tempfile::TempDir {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        let target_dir = dir.join("root");
+        fs::create_dir_all(dir).unwrap();
+        fs::create_dir_all(&target_dir).unwrap();
+
+        fs::create_dir_all(target_dir.join("uno")).unwrap();
+        File::create(target_dir.join("uno/foo.txt")).unwrap();
+        File::create(target_dir.join("uno/bar.txt")).unwrap();
+
+        fs::create_dir_all(target_dir.join("does")).unwrap();
+        File::create(target_dir.join("does/baz.md")).unwrap();
+
+        fs::set_permissions(target_dir, fs::Permissions::from_mode(0o000)).unwrap();
+
+        tmpdir
     }
 
     /// Create a common possible directory tree.

@@ -1,6 +1,5 @@
 use clap::Parser;
 use rustytree::tree;
-use std::io;
 
 #[derive(Debug, Parser)]
 #[clap(
@@ -14,15 +13,7 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-    // println!("{:?}", cli);
 
     println!("{}", cli.path);
-
-    let output = io::stdout();
-    tree(&cli.path, output);
-
-    // let mut output: Vec<u8> = Vec::new();
-    // tree(cli.path.as_str(), &mut indent, &mut output);
-    // let output_string = String::from_utf8_lossy(&output);
-    // println!("{}", output_string);
+    println!("{}", tree(&cli.path));
 }
