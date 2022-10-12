@@ -1,5 +1,5 @@
 use clap::Parser;
-use rustytree::{tree, TreeLevel};
+use rustytree::tree;
 use std::io;
 
 #[derive(Debug, Parser)]
@@ -16,11 +16,10 @@ fn main() {
     let cli = Cli::parse();
     // println!("{:?}", cli);
 
-    let indent: Vec<TreeLevel> = Vec::new();
     println!("{}", cli.path);
 
     let output = io::stdout();
-    tree(&cli.path, &indent, output);
+    tree(&cli.path, output);
 
     // let mut output: Vec<u8> = Vec::new();
     // tree(cli.path.as_str(), &mut indent, &mut output);

@@ -1,28 +1,59 @@
+//! This crate provides a library to render a graphical representation of a filesystem in a tree
+//! like fashion.
+//!
+//! Each directory is entered in an own thread to increase speed when concurrently traversing the
+//! directory tree. Additionally expensive computations can be done like the hash sum generation of
+//! files, which will also be done in a separate thread per file.
+
+#![warn(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 use rayon::prelude::*;
 use std::fs;
 use std::fs::DirEntry;
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+
+/// Indentation if no parent exists
 const INDENT_SIGN: &str = "  ";
+
+/// Bar if a parent exists
 const TREE_SIGN: &str = "│ ";
+
+/// In front of a file or dir if it is not the last
 const INNER_BRANCH: &str = "├─";
+
+/// In front of a file or dir if it is the last
 const FINAL_BRANCH: &str = "└─";
 
+/// Represent the different possible indentation components of a file.
 #[derive(Clone)]
-pub enum TreeLevel {
+enum TreeLevel {
+    /// Indentation if no parent exists
     Indent,
+    /// Bar if a parent exists
     TreeBar,
+    /// In front of a file or dir if it is not the last
     TreeBranch,
+    /// In front of a file or dir if it is the last
     TreeFinalBranch,
 }
 
+/// Represent a file with all necessary accompanying metadata.
 #[derive(Clone)]
-pub struct TreeEntry {
+struct TreeEntry {
+    /// Name of the current file or directory
     name: String,
+
+    /// List of different levels of parent directories up to the root
     levels: Vec<TreeLevel>,
 }
 
+/// Read the directory for the given Path.
+///
+/// Collect all entries in the given directory and sort them in alphabetical order. Do this in a
+/// case insensitive manner.
 fn read_dir_sorted(path: &impl AsRef<Path>) -> Vec<DirEntry> {
     let mut paths: Vec<_> = fs::read_dir(path).unwrap().map(|r| r.unwrap()).collect();
 
@@ -30,6 +61,7 @@ fn read_dir_sorted(path: &impl AsRef<Path>) -> Vec<DirEntry> {
     paths
 }
 
+/// Render the given TreeEntry into a string representation.
 fn render_tree_level(entry: &TreeEntry) -> String {
     let mut rendered_entry = String::new();
 
@@ -48,15 +80,18 @@ fn render_tree_level(entry: &TreeEntry) -> String {
     rendered_entry
 }
 
-pub fn tree<W: Write + Send + 'static + Sync>(
-    path: &impl AsRef<Path>,
-    indent_level: &[TreeLevel],
-    output: W,
-) {
+/// Generate a tree representation of the filesystem.
+///
+/// Walk the filesystem starting from the given directory and visit all child directories and files
+/// recursively. Render all the files into a tree like string representation. Each directory visit
+/// is done in a thread and also some expensive computations might be executed which will also be
+/// threaded to distribute the load amongst the available cores.
+pub fn tree<W: Write + Send + 'static + Sync>(path: &impl AsRef<Path>, output: W) {
+    let indent_level: Vec<TreeLevel> = Vec::new();
     let mut threadsafe_output = Arc::new(Mutex::new(output));
     let new_output = Arc::clone(&threadsafe_output);
 
-    let out = print_paths(path, indent_level, &mut threadsafe_output);
+    let out = print_paths(path, &indent_level, &mut threadsafe_output);
     new_output
         .lock()
         .unwrap()
@@ -64,6 +99,7 @@ pub fn tree<W: Write + Send + 'static + Sync>(
         .unwrap();
 }
 
+/// Actually do the work of computing the tree.
 fn print_paths<W: Write + Send + 'static + Sync>(
     path: &impl AsRef<Path>,
     indent_level: &[TreeLevel],
@@ -115,6 +151,7 @@ mod tests {
     use tempfile;
 
     #[test]
+    /// Verify that a generated filesystem tree is as expected.
     fn test_print_paths() {
         let dir = create_directory_tree();
         let mut output: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
@@ -130,6 +167,7 @@ mod tests {
     }
 
     #[test]
+    /// Verify that a directory is sorted correctly.
     fn test_read_dir_sorted() {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
         let dir = tmpdir.path();
@@ -154,6 +192,7 @@ mod tests {
     }
 
     #[test]
+    /// Verify that tree entries from a list of `TreeLevel` enums are rendered correct.
     fn test_render_tree_entry() {
         let test_entries = vec![
             (vec![TreeLevel::TreeBranch], "├─filename\n"),
@@ -197,6 +236,7 @@ mod tests {
         }
     }
 
+    /// Create a common possible directory tree.
     fn create_directory_tree() -> tempfile::TempDir {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
         let dir = tmpdir.path();
@@ -250,6 +290,7 @@ mod tests {
         tmpdir
     }
 
+    /// The expected output for the directory tree tests run agains.
     fn expected_output_standard() -> String {
         let output: String = "\
 ├─.vim
