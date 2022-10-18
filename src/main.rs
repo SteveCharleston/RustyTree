@@ -14,6 +14,5 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    println!("{}", cli.path);
     println!("{}", tree(&cli.path));
 }

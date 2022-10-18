@@ -10,7 +10,7 @@
 
 use rayon::prelude::*;
 use std::fs::DirEntry;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 /// Indentation if no parent exists
@@ -72,6 +72,7 @@ fn read_dir_sorted(path: &impl AsRef<Path>) -> Result<Vec<DirEntry>, io::Error> 
 /// Render the given TreeEntry into a string representation.
 fn render_tree_level(entry: &TreeEntry) -> String {
     let mut rendered_entry = String::new();
+    rendered_entry += "\n";
 
     for level in &entry.levels {
         let current_level = match level {
@@ -84,7 +85,6 @@ fn render_tree_level(entry: &TreeEntry) -> String {
     }
 
     rendered_entry += entry.name.as_str();
-    rendered_entry += "\n";
     rendered_entry
 }
 
@@ -97,22 +97,17 @@ fn render_tree_level(entry: &TreeEntry) -> String {
 pub fn tree(path: &impl AsRef<Path>) -> String {
     let indent_level: Vec<TreeLevel> = Vec::new();
 
-    print_paths(path, &indent_level)
+    let mut out: String = PathBuf::from(path.as_ref()).to_string_lossy().to_string();
+
+    out += print_paths(path, &indent_level).unwrap().as_str(); // print error on missing permissions
+    out
 }
 
 /// Actually do the work of computing the tree.
-fn print_paths(
-    path: &impl AsRef<Path>,
-    indent_level: &[TreeLevel],
-) -> String {
-    let entries = match read_dir_sorted(path) {
-        Ok(entries) => entries,
-        // return nothing since we don't have anything to display. Could be used to display such
-        // information in future.
-        Err(_) => return "".to_string(),
-    };
+fn print_paths(path: &impl AsRef<Path>, indent_level: &[TreeLevel]) -> Result<String, io::Error> {
+    let entries = read_dir_sorted(path)?;
     let entries_len = entries.len();
-    entries
+    let output = entries
         .into_par_iter()
         .enumerate()
         .map(|(i, entry)| {
@@ -136,15 +131,21 @@ fn print_paths(
 
             out += tree_level.as_str();
 
-
             if entry.path().is_dir() {
-                out += print_paths(&entry.path(), &recurisve_indent).as_str()
+                let sub_tree = match print_paths(&entry.path(), &recurisve_indent) {
+                    Ok(rendered_tree) => rendered_tree,
+                    Err(_) => " [Cannot access directory]".to_string(),
+                };
+
+                out += sub_tree.as_str();
             }
 
             out
         })
         .collect::<Vec<String>>()
-        .join("")
+        .join("");
+
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -162,7 +163,7 @@ mod tests {
         let mut indent: Vec<TreeLevel> = Vec::new();
 
         println!("tmpdir: {:?}", dir);
-        let out = print_paths(&dir.path(), &mut indent);
+        let out = print_paths(&dir.path(), &mut indent).unwrap();
 
         println!("{}", out);
         assert_eq!(out, expected_output_standard());
@@ -174,10 +175,10 @@ mod tests {
         let mut indent: Vec<TreeLevel> = Vec::new();
 
         let dir = create_directoy_no_permissions();
-        let out = print_paths(&dir.path(), &mut indent);
+        let out = print_paths(&dir.path(), &mut indent).unwrap();
 
         println!("{}", out);
-        assert_eq!(out, "└─root\n");
+        assert_eq!(out, "\n└─root [Cannot access directory]");
     }
 
     #[test]
@@ -209,18 +210,18 @@ mod tests {
     /// Verify that tree entries from a list of `TreeLevel` enums are rendered correct.
     fn test_render_tree_entry() {
         let test_entries = vec![
-            (vec![TreeLevel::TreeBranch], "├─filename\n"),
+            (vec![TreeLevel::TreeBranch], "\n├─filename"),
             (
                 vec![TreeLevel::TreeBar, TreeLevel::TreeBranch],
-                "│   ├─filename\n",
+                "\n│   ├─filename",
             ),
             (
                 vec![TreeLevel::TreeBar, TreeLevel::TreeFinalBranch],
-                "│   └─filename\n",
+                "\n│   └─filename",
             ),
             (
                 vec![TreeLevel::Indent, TreeLevel::TreeFinalBranch],
-                "  └─filename\n",
+                "\n  └─filename",
             ),
             (
                 vec![
@@ -228,7 +229,7 @@ mod tests {
                     TreeLevel::TreeBar,
                     TreeLevel::TreeBranch,
                 ],
-                "│   │   ├─filename\n",
+                "\n│   │   ├─filename",
             ),
             (
                 vec![
@@ -236,7 +237,7 @@ mod tests {
                     TreeLevel::TreeBar,
                     TreeLevel::TreeFinalBranch,
                 ],
-                "│   │   └─filename\n",
+                "\n│   │   └─filename",
             ),
         ];
 
@@ -326,7 +327,7 @@ mod tests {
 
     /// The expected output for the directory tree tests run agains.
     fn expected_output_standard() -> String {
-        let output: String = "\
+        let output: String = "
 ├─.vim
 │   ├─.netrwhist
 │   ├─session
@@ -367,9 +368,8 @@ mod tests {
     └─obsolete
       ├─does.md
       ├─tres.txt
-      └─uno.md
-"
-        .to_string();
+      └─uno.md"
+            .to_string();
         output
     }
 }
