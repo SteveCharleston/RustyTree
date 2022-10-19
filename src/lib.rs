@@ -26,7 +26,7 @@ const INNER_BRANCH: &str = "├─";
 const FINAL_BRANCH: &str = "└─";
 
 /// Represent the different possible indentation components of a file.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum TreeLevel {
     /// Indentation if no parent exists
     Indent,
@@ -39,13 +39,27 @@ enum TreeLevel {
 }
 
 /// Represent a file with all necessary accompanying metadata.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct TreeEntry {
     /// Name of the current file or directory
     name: String,
 
     /// List of different levels of parent directories up to the root
     levels: Vec<TreeLevel>,
+
+    /// List of child entries to enable a recursive data structure
+    children: TreeChild,
+}
+
+/// Represent the possible states of a subdirectory or alternatives in case of error or no dir.
+#[derive(Clone, Debug)]
+enum TreeChild {
+    /// No children exist or have been read yet
+    None,
+    /// Directory couldn't be accessed for some reason
+    Error(io::ErrorKind),
+    /// The expected child entries
+    Children(Vec<TreeEntry>),
 }
 
 /// Read the directory for the given Path and sort the files alphabetically.
@@ -85,6 +99,10 @@ fn render_tree_level(entry: &TreeEntry) -> String {
     }
 
     rendered_entry += entry.name.as_str();
+
+    if let TreeChild::Error(_) = entry.children {
+        rendered_entry += " [Cannot access directory]";
+    }
     rendered_entry
 }
 
@@ -97,21 +115,45 @@ fn render_tree_level(entry: &TreeEntry) -> String {
 pub fn tree(path: &impl AsRef<Path>) -> String {
     let indent_level: Vec<TreeLevel> = Vec::new();
 
-    let mut out: String = PathBuf::from(path.as_ref()).to_string_lossy().to_string();
+    let root_name: String = PathBuf::from(path.as_ref()).to_string_lossy().to_string();
 
-    out += print_paths(path, &indent_level).unwrap().as_str(); // print error on missing permissions
-    out
+    let entry = TreeEntry {
+        name: root_name,
+        levels: indent_level.clone(),
+        children: TreeChild::Children(recurse_paths(path, &indent_level).unwrap()),
+    };
+
+    render_tree(&entry).trim().to_string()
+
+    //format!("{:#?}", entry)
+}
+
+/// Generate a string representation of the nested TreeEntry data structure.
+///
+/// Walk the graph of the filesystem that has previously been generated and render it into an
+/// actual String representation of a filesystem tree.
+fn render_tree(tree_entry: &TreeEntry) -> String {
+    let mut current_level = render_tree_level(tree_entry);
+    if let TreeChild::Children(children) = &tree_entry.children {
+        for child in children {
+            current_level += render_tree(child).as_str();
+        }
+    }
+
+    current_level
 }
 
 /// Actually do the work of computing the tree.
-fn print_paths(path: &impl AsRef<Path>, indent_level: &[TreeLevel]) -> Result<String, io::Error> {
+fn recurse_paths(
+    path: &impl AsRef<Path>,
+    indent_level: &[TreeLevel],
+) -> Result<Vec<TreeEntry>, io::Error> {
     let entries = read_dir_sorted(path)?;
     let entries_len = entries.len();
     let output = entries
         .into_par_iter()
         .enumerate()
         .map(|(i, entry)| {
-            let mut out = String::new();
             let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
             let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
 
@@ -123,27 +165,23 @@ fn print_paths(path: &impl AsRef<Path>, indent_level: &[TreeLevel]) -> Result<St
                 recurisve_indent.push(TreeLevel::TreeBar);
             };
 
-            let tree_entry = TreeEntry {
+            let mut tree_entry = TreeEntry {
                 name: entry.file_name().to_string_lossy().to_string(),
                 levels: current_indent.to_vec(),
+                children: TreeChild::None,
             };
-            let tree_level = render_tree_level(&tree_entry);
-
-            out += tree_level.as_str();
 
             if entry.path().is_dir() {
-                let sub_tree = match print_paths(&entry.path(), &recurisve_indent) {
-                    Ok(rendered_tree) => rendered_tree,
-                    Err(_) => " [Cannot access directory]".to_string(),
-                };
-
-                out += sub_tree.as_str();
+                // Either store the successfully retrieved subtree or store an error
+                match recurse_paths(&entry.path(), &recurisve_indent) {
+                    Ok(sub_tree) => tree_entry.children = TreeChild::Children(sub_tree),
+                    Err(io_err) => tree_entry.children = TreeChild::Error(io_err.kind()),
+                }
             }
 
-            out
+            tree_entry
         })
-        .collect::<Vec<String>>()
-        .join("");
+        .collect::<Vec<TreeEntry>>();
 
     Ok(output)
 }
@@ -160,25 +198,35 @@ mod tests {
     /// Verify that a generated filesystem tree is as expected.
     fn test_print_paths() {
         let dir = create_directory_tree();
-        let mut indent: Vec<TreeLevel> = Vec::new();
-
         println!("tmpdir: {:?}", dir);
-        let out = print_paths(&dir.path(), &mut indent).unwrap();
+        let out = tree(&dir.path());
 
         println!("{}", out);
-        assert_eq!(out, expected_output_standard());
+        assert_eq!(
+            out,
+            format!(
+                "{}{}",
+                dir.path().to_str().unwrap(),
+                expected_output_standard()
+            )
+        );
     }
 
     #[test]
     /// Verfiy that missing read permissions are handled gracefully.
     fn test_no_read_permissions() {
-        let mut indent: Vec<TreeLevel> = Vec::new();
-
         let dir = create_directoy_no_permissions();
-        let out = print_paths(&dir.path(), &mut indent).unwrap();
+        let out = tree(&dir.path());
 
         println!("{}", out);
-        assert_eq!(out, "\n└─root [Cannot access directory]");
+        assert_eq!(
+            out,
+            format!(
+                "{}{}",
+                dir.path().to_str().unwrap(),
+                "\n└─root [Cannot access directory]"
+            )
+        );
     }
 
     #[test]
@@ -245,6 +293,7 @@ mod tests {
             let entry = TreeEntry {
                 name: String::from("filename"),
                 levels: level_data,
+                children: TreeChild::None,
             };
             assert_eq!(render_tree_level(&entry), entry_presentation);
             print!("{}", render_tree_level(&entry));
