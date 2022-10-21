@@ -8,10 +8,27 @@
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 
+use clap::Parser;
 use rayon::prelude::*;
 use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
+
+#[derive(Debug, Parser)]
+#[clap(
+    about = "List contents of directories in a tree-like format",
+    author = "Steven Schalhorn <steven@schalhorn.org>"
+)]
+/// Arguments to the application.
+pub struct Options {
+    #[clap(default_value = ".", value_parser)]
+    /// Path to the directory to traverse into
+    pub path: String,
+
+    #[clap(short = 'F', long)]
+    /// Append a `/' for directories
+    pub classify: bool,
+}
 
 /// Indentation if no parent exists
 const INDENT_SIGN: &str = "  ";
@@ -44,6 +61,9 @@ struct TreeEntry {
     /// Name of the current file or directory
     name: String,
 
+    /// Save kind of entry to display it differently
+    kind: TreeEntryKind,
+
     /// List of different levels of parent directories up to the root
     levels: Vec<TreeLevel>,
 
@@ -60,6 +80,15 @@ enum TreeChild {
     Error(io::ErrorKind),
     /// The expected child entries
     Children(Vec<TreeEntry>),
+}
+
+/// Represent which kind of file a TreeEntry is.
+#[derive(Clone, Debug)]
+enum TreeEntryKind {
+    /// TreeEntry is a regular file
+    File,
+    /// TreeEntry is a Directory
+    Directory,
 }
 
 /// Read the directory for the given Path and sort the files alphabetically.
@@ -84,7 +113,7 @@ fn read_dir_sorted(path: &impl AsRef<Path>) -> Result<Vec<DirEntry>, io::Error> 
 }
 
 /// Render the given TreeEntry into a string representation.
-fn render_tree_level(entry: &TreeEntry) -> String {
+fn render_tree_level(entry: &TreeEntry, options: &Options) -> String {
     let mut rendered_entry = String::new();
     rendered_entry += "\n";
 
@@ -100,6 +129,12 @@ fn render_tree_level(entry: &TreeEntry) -> String {
 
     rendered_entry += entry.name.as_str();
 
+    if let TreeEntryKind::Directory = entry.kind {
+        if options.classify {
+            rendered_entry += "/";
+        }
+    }
+
     if let TreeChild::Error(_) = entry.children {
         rendered_entry += " [Cannot access directory]";
     }
@@ -112,18 +147,19 @@ fn render_tree_level(entry: &TreeEntry) -> String {
 /// recursively. Render all the files into a tree like string representation. Each directory visit
 /// is done in a thread and also some expensive computations might be executed which will also be
 /// threaded to distribute the load amongst the available cores.
-pub fn tree(path: &impl AsRef<Path>) -> String {
+pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
     let indent_level: Vec<TreeLevel> = Vec::new();
 
     let root_name: String = PathBuf::from(path.as_ref()).to_string_lossy().to_string();
 
     let entry = TreeEntry {
         name: root_name,
+        kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
         children: TreeChild::Children(recurse_paths(path, &indent_level).unwrap()),
     };
 
-    render_tree(&entry).trim().to_string()
+    render_tree(&entry, options).trim().to_string()
 
     //format!("{:#?}", entry)
 }
@@ -132,11 +168,11 @@ pub fn tree(path: &impl AsRef<Path>) -> String {
 ///
 /// Walk the graph of the filesystem that has previously been generated and render it into an
 /// actual String representation of a filesystem tree.
-fn render_tree(tree_entry: &TreeEntry) -> String {
-    let mut current_level = render_tree_level(tree_entry);
+fn render_tree(tree_entry: &TreeEntry, options: &Options) -> String {
+    let mut current_level = render_tree_level(tree_entry, options);
     if let TreeChild::Children(children) = &tree_entry.children {
         for child in children {
-            current_level += render_tree(child).as_str();
+            current_level += render_tree(child, options).as_str();
         }
     }
 
@@ -167,6 +203,11 @@ fn recurse_paths(
 
             let mut tree_entry = TreeEntry {
                 name: entry.file_name().to_string_lossy().to_string(),
+                kind: if entry.path().is_dir() {
+                    TreeEntryKind::Directory
+                } else {
+                    TreeEntryKind::File
+                },
                 levels: current_indent.to_vec(),
                 children: TreeChild::None,
             };
@@ -198,8 +239,12 @@ mod tests {
     /// Verify that a generated filesystem tree is as expected.
     fn test_print_paths() {
         let dir = create_directory_tree();
+        let cli = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            classify: false,
+        };
         println!("tmpdir: {:?}", dir);
-        let out = tree(&dir.path());
+        let out = tree(&dir.path(), &cli);
 
         println!("{}", out);
         assert_eq!(
@@ -216,7 +261,11 @@ mod tests {
     /// Verfiy that missing read permissions are handled gracefully.
     fn test_no_read_permissions() {
         let dir = create_directoy_no_permissions();
-        let out = tree(&dir.path());
+        let cli = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            classify: false,
+        };
+        let out = tree(&dir.path(), &cli);
 
         println!("{}", out);
         assert_eq!(
@@ -289,15 +338,56 @@ mod tests {
             ),
         ];
 
+        let cli = Options {
+            path: ".".to_string(),
+            classify: false,
+        };
+
         for (level_data, entry_presentation) in test_entries {
             let entry = TreeEntry {
                 name: String::from("filename"),
+                kind: TreeEntryKind::File,
                 levels: level_data,
                 children: TreeChild::None,
             };
-            assert_eq!(render_tree_level(&entry), entry_presentation);
-            print!("{}", render_tree_level(&entry));
+            assert_eq!(render_tree_level(&entry, &cli), entry_presentation);
+            print!("{}", render_tree_level(&entry, &cli));
         }
+    }
+
+    #[test]
+    /// Verify that directories are correctly classified with a trailing slash.
+    fn test_render_tree_entry_classify() {
+        let cli_classify = Options {
+            path: ".".to_string(),
+            classify: true,
+        };
+
+        let cli_classify_not = Options {
+            path: ".".to_string(),
+            classify: false,
+        };
+
+        let direntry = TreeEntry {
+            name: String::from("dirname"),
+            kind: TreeEntryKind::Directory,
+            levels: vec![TreeLevel::TreeBranch],
+            children: TreeChild::None,
+        };
+
+        let fileentry = TreeEntry {
+            name: String::from("filename"),
+            kind: TreeEntryKind::File,
+            levels: vec![TreeLevel::TreeBranch],
+            children: TreeChild::None,
+        };
+
+
+        assert_eq!(render_tree_level(&direntry, &cli_classify), "\n├─dirname/");
+        assert_eq!(render_tree_level(&direntry, &cli_classify_not), "\n├─dirname");
+
+        assert_eq!(render_tree_level(&fileentry, &cli_classify), "\n├─filename");
+        assert_eq!(render_tree_level(&fileentry, &cli_classify_not), "\n├─filename");
     }
 
     /// Create a directory tree with a directory for which access is restricted.
