@@ -9,6 +9,7 @@
 #![warn(clippy::missing_docs_in_private_items)]
 
 use clap::Parser;
+use lscolors::{LsColors, Style};
 use rayon::prelude::*;
 use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,10 @@ pub struct Options {
     #[clap(short = 'F', long)]
     /// Append a `/' for directories
     pub classify: bool,
+
+    #[clap(short = 'n', long)]
+    /// Turn colorization off
+    pub nocolor: bool,
 }
 
 /// Indentation if no parent exists
@@ -59,7 +64,7 @@ enum TreeLevel {
 #[derive(Clone, Debug)]
 struct TreeEntry {
     /// Name of the current file or directory
-    name: String,
+    name: PathBuf,
 
     /// Save kind of entry to display it differently
     kind: TreeEntryKind,
@@ -113,7 +118,10 @@ fn read_dir_sorted(path: &impl AsRef<Path>) -> Result<Vec<DirEntry>, io::Error> 
 }
 
 /// Render the given TreeEntry into a string representation.
-fn render_tree_level(entry: &TreeEntry, options: &Options) -> String {
+fn render_tree_level(entry: &TreeEntry, options: &Options, lscolors: &LsColors) -> String {
+    let style = lscolors.style_for_path(&entry.name);
+    let ansi_style = style.map(Style::to_ansi_term_style).unwrap_or_default();
+
     let mut rendered_entry = String::new();
     rendered_entry += "\n";
 
@@ -127,7 +135,18 @@ fn render_tree_level(entry: &TreeEntry, options: &Options) -> String {
         rendered_entry += current_level.as_str();
     }
 
-    rendered_entry += entry.name.as_str();
+    // first entry should always be displayed as given, for the rest only the filename
+    if entry.levels.is_empty() {
+        rendered_entry += ansi_style
+            .paint(entry.name.to_string_lossy())
+            .to_string()
+            .as_str()
+    } else {
+        rendered_entry += ansi_style
+            .paint(entry.name.file_name().unwrap().to_string_lossy())
+            .to_string()
+            .as_str()
+    };
 
     if let TreeEntryKind::Directory = entry.kind {
         if options.classify {
@@ -149,17 +168,19 @@ fn render_tree_level(entry: &TreeEntry, options: &Options) -> String {
 /// threaded to distribute the load amongst the available cores.
 pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
     let indent_level: Vec<TreeLevel> = Vec::new();
-
-    let root_name: String = PathBuf::from(path.as_ref()).to_string_lossy().to_string();
+    let lscolors = match options.nocolor {
+        false => LsColors::from_env().unwrap_or_default(),
+        true => LsColors::empty(),
+    };
 
     let entry = TreeEntry {
-        name: root_name,
+        name: path.as_ref().to_path_buf(),
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
         children: TreeChild::Children(recurse_paths(path, &indent_level).unwrap()),
     };
 
-    render_tree(&entry, options).trim().to_string()
+    render_tree(&entry, options, &lscolors).trim().to_string()
 
     //format!("{:#?}", entry)
 }
@@ -168,11 +189,11 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
 ///
 /// Walk the graph of the filesystem that has previously been generated and render it into an
 /// actual String representation of a filesystem tree.
-fn render_tree(tree_entry: &TreeEntry, options: &Options) -> String {
-    let mut current_level = render_tree_level(tree_entry, options);
+fn render_tree(tree_entry: &TreeEntry, options: &Options, lscolors: &LsColors) -> String {
+    let mut current_level = render_tree_level(tree_entry, options, lscolors);
     if let TreeChild::Children(children) = &tree_entry.children {
         for child in children {
-            current_level += render_tree(child, options).as_str();
+            current_level += render_tree(child, options, lscolors).as_str();
         }
     }
 
@@ -202,7 +223,7 @@ fn recurse_paths(
             };
 
             let mut tree_entry = TreeEntry {
-                name: entry.file_name().to_string_lossy().to_string(),
+                name: entry.path(),
                 kind: if entry.path().is_dir() {
                     TreeEntryKind::Directory
                 } else {
@@ -242,6 +263,7 @@ mod tests {
         let cli = Options {
             path: dir.path().to_string_lossy().to_string(),
             classify: false,
+            nocolor: true,
         };
         println!("tmpdir: {:?}", dir);
         let out = tree(&dir.path(), &cli);
@@ -264,6 +286,7 @@ mod tests {
         let cli = Options {
             path: dir.path().to_string_lossy().to_string(),
             classify: false,
+            nocolor: true,
         };
         let out = tree(&dir.path(), &cli);
 
@@ -341,17 +364,23 @@ mod tests {
         let cli = Options {
             path: ".".to_string(),
             classify: false,
+            nocolor: true,
         };
+
+        let lscolors = LsColors::default();
 
         for (level_data, entry_presentation) in test_entries {
             let entry = TreeEntry {
-                name: String::from("filename"),
+                name: PathBuf::from("filename"),
                 kind: TreeEntryKind::File,
                 levels: level_data,
                 children: TreeChild::None,
             };
-            assert_eq!(render_tree_level(&entry, &cli), entry_presentation);
-            print!("{}", render_tree_level(&entry, &cli));
+            assert_eq!(
+                render_tree_level(&entry, &cli, &lscolors),
+                entry_presentation
+            );
+            print!("{}", render_tree_level(&entry, &cli, &lscolors));
         }
     }
 
@@ -361,33 +390,70 @@ mod tests {
         let cli_classify = Options {
             path: ".".to_string(),
             classify: true,
+            nocolor: true,
         };
+
+        let lscolors = LsColors::default();
 
         let cli_classify_not = Options {
             path: ".".to_string(),
             classify: false,
+            nocolor: true,
         };
 
         let direntry = TreeEntry {
-            name: String::from("dirname"),
+            name: PathBuf::from("dirname"),
             kind: TreeEntryKind::Directory,
             levels: vec![TreeLevel::TreeBranch],
             children: TreeChild::None,
         };
 
         let fileentry = TreeEntry {
-            name: String::from("filename"),
+            name: PathBuf::from("filename"),
             kind: TreeEntryKind::File,
             levels: vec![TreeLevel::TreeBranch],
             children: TreeChild::None,
         };
 
+        assert_eq!(
+            render_tree_level(&direntry, &cli_classify, &lscolors),
+            "\n├─dirname/"
+        );
+        assert_eq!(
+            render_tree_level(&direntry, &cli_classify_not, &lscolors),
+            "\n├─dirname"
+        );
 
-        assert_eq!(render_tree_level(&direntry, &cli_classify), "\n├─dirname/");
-        assert_eq!(render_tree_level(&direntry, &cli_classify_not), "\n├─dirname");
+        assert_eq!(
+            render_tree_level(&fileentry, &cli_classify, &lscolors),
+            "\n├─filename"
+        );
+        assert_eq!(
+            render_tree_level(&fileentry, &cli_classify_not, &lscolors),
+            "\n├─filename"
+        );
+    }
 
-        assert_eq!(render_tree_level(&fileentry, &cli_classify), "\n├─filename");
-        assert_eq!(render_tree_level(&fileentry, &cli_classify_not), "\n├─filename");
+    #[test]
+    /// Verify that the nocolor option turns colorization off.
+    fn test_render_tree_nocolor() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+
+        let cli_colorful = Options {
+            path: ".".to_string(),
+            classify: false,
+            nocolor: false,
+        };
+
+        let cli_nocolor = Options {
+            path: ".".to_string(),
+            classify: false,
+            nocolor: true,
+        };
+
+        assert!(tree(&dir, &cli_colorful).contains("[1;34m"),);
+        assert!(!tree(&dir, &cli_nocolor).contains("[1;34m"),);
     }
 
     /// Create a directory tree with a directory for which access is restricted.
