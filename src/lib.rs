@@ -13,7 +13,7 @@ use lscolors::{LsColors, Style};
 use rayon::prelude::*;
 use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
-use std::{fs, io};
+use std::{fmt, fs, io};
 
 #[derive(Debug, Default, Parser)]
 #[clap(
@@ -37,6 +37,10 @@ pub struct Options {
     #[clap(short = 'f', long)]
     /// Print the full path prefix for each file
     pub fullpath: bool,
+
+    #[clap(long)]
+    /// Omit the file and directory report at the end of the tree
+    pub noreport: bool,
 }
 
 /// Indentation if no parent exists
@@ -78,6 +82,29 @@ struct TreeEntry {
 
     /// List of child entries to enable a recursive data structure
     children: TreeChild,
+}
+
+/// Hold the rendered tree as well as number of directories and files to generate the final status
+/// line.
+struct TreeRepresentation {
+    /// Final rendered string representation of the tree
+    rendered: String,
+    /// Number of directories in the rendered tree
+    directories: u32,
+    /// Number of files in the rendered tree
+    files: u32,
+}
+
+impl fmt::Display for TreeRepresentation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}\n\n{} directories, {} files",
+            self.rendered.trim(),
+            self.directories,
+            self.files,
+        )
+    }
 }
 
 /// Represent the possible states of a subdirectory or alternatives in case of error or no dir.
@@ -185,7 +212,13 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         children: TreeChild::Children(recurse_paths(path, &indent_level).unwrap()),
     };
 
-    render_tree(&entry, options, &lscolors).trim().to_string()
+    let full_representation = render_tree(&entry, options, &lscolors);
+    if !options.noreport {
+        full_representation.to_string()
+    } else {
+        // without the report we only need the rendered tree directly
+        full_representation.rendered.trim().to_string()
+    }
 
     //format!("{:#?}", entry)
 }
@@ -194,15 +227,33 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
 ///
 /// Walk the graph of the filesystem that has previously been generated and render it into an
 /// actual String representation of a filesystem tree.
-fn render_tree(tree_entry: &TreeEntry, options: &Options, lscolors: &LsColors) -> String {
+fn render_tree(
+    tree_entry: &TreeEntry,
+    options: &Options,
+    lscolors: &LsColors,
+) -> TreeRepresentation {
     let mut current_level = render_tree_level(tree_entry, options, lscolors);
+    let mut directories: u32 = 0;
+    let mut files: u32 = 0;
     if let TreeChild::Children(children) = &tree_entry.children {
         for child in children {
-            current_level += render_tree(child, options, lscolors).as_str();
+            match child.kind {
+                TreeEntryKind::Directory => directories += 1,
+                TreeEntryKind::File => files += 1,
+            }
+
+            let sub_representation = render_tree(child, options, lscolors);
+            current_level += sub_representation.rendered.as_str();
+            directories += sub_representation.directories;
+            files += sub_representation.files;
         }
     }
 
-    current_level
+    TreeRepresentation {
+        rendered: current_level,
+        directories,
+        files,
+    }
 }
 
 /// Actually do the work of computing the tree.
@@ -268,6 +319,7 @@ mod tests {
         let cli = Options {
             path: dir.path().to_string_lossy().to_string(),
             nocolor: true,
+            noreport: true,
             ..Default::default()
         };
         println!("tmpdir: {:?}", dir);
@@ -291,6 +343,7 @@ mod tests {
         let cli = Options {
             path: dir.path().to_string_lossy().to_string(),
             nocolor: true,
+            noreport: true,
             ..Default::default()
         };
         let out = tree(&dir.path(), &cli);
@@ -479,6 +532,33 @@ mod tests {
             "/Music/one.mp3",
         ] {
             assert!(tree_out.contains(filename));
+        }
+    }
+
+    #[test]
+    /// Verify that a correct report is generated
+    fn test_tree_end_report() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+
+        let cli = Options {
+            ..Default::default()
+        };
+
+        let mut dir_counter: u32 = 0;
+        let mut file_counter: u32 = 0;
+
+        for dir_name in 0..=5 {
+            dir_counter += 1;
+            fs::create_dir_all(dir.join(dir_name.to_string())).unwrap();
+
+            for file_name in 0..=10 {
+                file_counter += 1;
+                File::create(dir.join(format!("{}/{}", dir_name, file_name))).unwrap();
+                assert!(tree(&dir, &cli).ends_with(
+                    format!("{} directories, {} files", dir_counter, file_counter).as_str()
+                ));
+            }
         }
     }
 
