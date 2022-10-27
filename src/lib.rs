@@ -15,7 +15,7 @@ use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Default, Parser)]
 #[clap(
     about = "List contents of directories in a tree-like format",
     author = "Steven Schalhorn <steven@schalhorn.org>"
@@ -33,6 +33,10 @@ pub struct Options {
     #[clap(short = 'n', long)]
     /// Turn colorization off
     pub nocolor: bool,
+
+    #[clap(short = 'f', long)]
+    /// Print the full path prefix for each file
+    pub fullpath: bool,
 }
 
 /// Indentation if no parent exists
@@ -135,8 +139,9 @@ fn render_tree_level(entry: &TreeEntry, options: &Options, lscolors: &LsColors) 
         rendered_entry += current_level.as_str();
     }
 
-    // first entry should always be displayed as given, for the rest only the filename
-    if entry.levels.is_empty() {
+    // first entry should always be displayed as given, for the rest only the filename if fullpath
+    // option is not given.
+    if entry.levels.is_empty() || options.fullpath {
         rendered_entry += ansi_style
             .paint(entry.name.to_string_lossy())
             .to_string()
@@ -262,8 +267,8 @@ mod tests {
         let dir = create_directory_tree();
         let cli = Options {
             path: dir.path().to_string_lossy().to_string(),
-            classify: false,
             nocolor: true,
+            ..Default::default()
         };
         println!("tmpdir: {:?}", dir);
         let out = tree(&dir.path(), &cli);
@@ -285,8 +290,8 @@ mod tests {
         let dir = create_directoy_no_permissions();
         let cli = Options {
             path: dir.path().to_string_lossy().to_string(),
-            classify: false,
             nocolor: true,
+            ..Default::default()
         };
         let out = tree(&dir.path(), &cli);
 
@@ -363,8 +368,8 @@ mod tests {
 
         let cli = Options {
             path: ".".to_string(),
-            classify: false,
             nocolor: true,
+            ..Default::default()
         };
 
         let lscolors = LsColors::default();
@@ -391,14 +396,15 @@ mod tests {
             path: ".".to_string(),
             classify: true,
             nocolor: true,
+            ..Default::default()
         };
 
         let lscolors = LsColors::default();
 
         let cli_classify_not = Options {
             path: ".".to_string(),
-            classify: false,
             nocolor: true,
+            ..Default::default()
         };
 
         let direntry = TreeEntry {
@@ -437,23 +443,43 @@ mod tests {
     #[test]
     /// Verify that the nocolor option turns colorization off.
     fn test_render_tree_nocolor() {
-        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
-        let dir = tmpdir.path();
+        let dir = create_directory_tree();
 
         let cli_colorful = Options {
             path: ".".to_string(),
-            classify: false,
             nocolor: false,
+            ..Default::default()
         };
 
         let cli_nocolor = Options {
             path: ".".to_string(),
-            classify: false,
             nocolor: true,
+            ..Default::default()
         };
 
         assert!(tree(&dir, &cli_colorful).contains("[1;34m"),);
         assert!(!tree(&dir, &cli_nocolor).contains("[1;34m"),);
+    }
+
+    #[test]
+    /// Verify that a full filepath is printed when this option is set.
+    fn test_full_path() {
+        let dir = create_directory_tree();
+
+        let cli = Options {
+            path: ".".to_string(),
+            fullpath: true,
+            ..Default::default()
+        };
+
+        let tree_out = tree(&dir, &cli);
+        for filename in [
+            "/Pictures/seasons/autumn.jpg",
+            "/Trash/old/obsolete/does.md",
+            "/Music/one.mp3",
+        ] {
+            assert!(tree_out.contains(filename));
+        }
     }
 
     /// Create a directory tree with a directory for which access is restricted.
