@@ -39,8 +39,12 @@ pub struct Options {
     pub fullpath: bool,
 
     #[clap(short = 'a', long)]
-    /// Print the full path prefix for each file
+    /// Print hidden files as well
     pub all: bool,
+
+    #[clap(short = 'd', long)]
+    /// List directories only
+    pub dironly: bool,
 
     #[clap(long)]
     /// Omit the file and directory report at the end of the tree
@@ -146,7 +150,8 @@ fn read_dir(path: &impl AsRef<Path>, options: &Options) -> Result<Vec<DirEntry>,
     // dbg!(PathBuf::from(path.as_ref()));
     let mut paths: Vec<_> = fs::read_dir(path)?
         .map(|r| r.expect("Reading file inside a directory")) // not expected to normally fail
-        .filter(|r| options.all || !r.file_name().to_string_lossy().starts_with('.'))
+        .filter(|r| options.all || !r.file_name().to_string_lossy().starts_with('.')) // hidden
+        .filter(|r| !options.dironly || r.path().is_dir()) // directories only
         .collect();
 
     paths.sort_by_key(|entry| entry.path().to_string_lossy().to_lowercase());
@@ -339,6 +344,32 @@ mod tests {
                 "{}{}",
                 dir.path().to_str().unwrap(),
                 expected_output_standard_all()
+            )
+        );
+    }
+
+    #[test]
+    /// Verify that a generated filesystem tree is as expected with only directories.
+    fn test_print_paths_dironly() {
+        let dir = create_directory_tree();
+        let cli = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            all: true,
+            dironly: true,
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir.path(), &cli);
+
+        println!("{}", out);
+        assert_eq!(
+            out,
+            format!(
+                "{}{}",
+                dir.path().to_str().unwrap(),
+                expected_output_standard_dironly_all()
             )
         );
     }
@@ -758,6 +789,25 @@ mod tests {
       ├─does.md
       ├─tres.txt
       └─uno.md"
+            .to_string();
+        output
+    }
+
+    /// The expected output for the directory tree tests run against with directories only.
+    fn expected_output_standard_dironly_all() -> String {
+        let output: String = "
+├─.vim
+│   └─session
+├─Desktop
+├─Downloads
+├─Music
+├─My Projects
+├─Pictures
+│   ├─days
+│   └─seasons
+└─Trash
+  └─old
+    └─obsolete"
             .to_string();
         output
     }
