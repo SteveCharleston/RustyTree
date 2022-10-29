@@ -46,6 +46,10 @@ pub struct Options {
     /// List directories only
     pub dironly: bool,
 
+    #[clap(short = 'L', long)]
+    /// Maximal depth of the directory tree
+    pub level: Option<usize>,
+
     #[clap(long)]
     /// Omit the file and directory report at the end of the tree
     pub noreport: bool,
@@ -300,7 +304,7 @@ fn recurse_paths(
                 children: TreeChild::None,
             };
 
-            if entry.path().is_dir() {
+            if entry.path().is_dir() && (options.level.is_none() || options.level.unwrap() > indent_level.len()+1) {
                 // Either store the successfully retrieved subtree or store an error
                 match recurse_paths(&entry.path(), &recurisve_indent, options) {
                     Ok(sub_tree) => tree_entry.children = TreeChild::Children(sub_tree),
