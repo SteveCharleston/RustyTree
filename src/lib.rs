@@ -38,6 +38,10 @@ pub struct Options {
     /// Print the full path prefix for each file
     pub fullpath: bool,
 
+    #[clap(short = 'a', long)]
+    /// Print the full path prefix for each file
+    pub all: bool,
+
     #[clap(long)]
     /// Omit the file and directory report at the end of the tree
     pub noreport: bool,
@@ -138,10 +142,11 @@ enum TreeEntryKind {
 /// * The provided `path` doesn't exist.
 /// * The process lacks permissions to view the contens.
 /// * The `path` points at a non-directory file.
-fn read_dir_sorted(path: &impl AsRef<Path>) -> Result<Vec<DirEntry>, io::Error> {
+fn read_dir(path: &impl AsRef<Path>, options: &Options) -> Result<Vec<DirEntry>, io::Error> {
     // dbg!(PathBuf::from(path.as_ref()));
     let mut paths: Vec<_> = fs::read_dir(path)?
         .map(|r| r.expect("Reading file inside a directory")) // not expected to normally fail
+        .filter(|r| options.all || !r.file_name().to_string_lossy().starts_with('.'))
         .collect();
 
     paths.sort_by_key(|entry| entry.path().to_string_lossy().to_lowercase());
@@ -209,7 +214,7 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         name: path.as_ref().to_path_buf(),
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
-        children: TreeChild::Children(recurse_paths(path, &indent_level).unwrap()),
+        children: TreeChild::Children(recurse_paths(path, &indent_level, options).unwrap()),
     };
 
     let full_representation = render_tree(&entry, options, &lscolors);
@@ -260,8 +265,9 @@ fn render_tree(
 fn recurse_paths(
     path: &impl AsRef<Path>,
     indent_level: &[TreeLevel],
+    options: &Options,
 ) -> Result<Vec<TreeEntry>, io::Error> {
-    let entries = read_dir_sorted(path)?;
+    let entries = read_dir(path, options)?;
     let entries_len = entries.len();
     let output = entries
         .into_par_iter()
@@ -291,7 +297,7 @@ fn recurse_paths(
 
             if entry.path().is_dir() {
                 // Either store the successfully retrieved subtree or store an error
-                match recurse_paths(&entry.path(), &recurisve_indent) {
+                match recurse_paths(&entry.path(), &recurisve_indent, options) {
                     Ok(sub_tree) => tree_entry.children = TreeChild::Children(sub_tree),
                     Err(io_err) => tree_entry.children = TreeChild::Error(io_err.kind()),
                 }
@@ -313,13 +319,14 @@ mod tests {
     use tempfile;
 
     #[test]
-    /// Verify that a generated filesystem tree is as expected.
-    fn test_print_paths() {
+    /// Verify that a generated filesystem tree is as expected with hidden files.
+    fn test_print_paths_all() {
         let dir = create_directory_tree();
         let cli = Options {
             path: dir.path().to_string_lossy().to_string(),
             nocolor: true,
             noreport: true,
+            all: true,
             ..Default::default()
         };
         println!("tmpdir: {:?}", dir);
@@ -331,7 +338,32 @@ mod tests {
             format!(
                 "{}{}",
                 dir.path().to_str().unwrap(),
-                expected_output_standard()
+                expected_output_standard_all()
+            )
+        );
+    }
+
+    #[test]
+    /// Verify that a generated filesystem tree is as expected without hidden files.
+    fn test_print_paths() {
+        let dir = create_directory_tree();
+        let cli = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            all: false,
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir.path(), &cli);
+
+        println!("{}", out);
+        assert_eq!(
+            out,
+            format!(
+                "{}{}",
+                dir.path().to_str().unwrap(),
+                expected_output_standard_nonhidden()
             )
         );
     }
@@ -364,6 +396,11 @@ mod tests {
     fn test_read_dir_sorted() {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
         let dir = tmpdir.path();
+        let cli = Options {
+            nocolor: true,
+            noreport: true,
+            ..Default::default()
+        };
 
         let sorted_dirs = ["Bardir", "does", "Foodir", "tres", "unos", "Xanadu"];
 
@@ -376,7 +413,7 @@ mod tests {
         fs::create_dir(dir.join("does")).unwrap();
         fs::create_dir(dir.join("tres")).unwrap();
 
-        let entries = read_dir_sorted(&dir).unwrap();
+        let entries = read_dir(&dir, &cli).unwrap();
 
         for (i, entry) in entries.iter().enumerate() {
             println!("{:?} -- {}", entry.file_name(), sorted_dirs[i]);
@@ -636,8 +673,49 @@ mod tests {
         tmpdir
     }
 
-    /// The expected output for the directory tree tests run agains.
-    fn expected_output_standard() -> String {
+    /// The expected output for the directory tree tests run against without hidden files.
+    fn expected_output_standard_nonhidden() -> String {
+        let output: String = "
+├─bar.txt
+├─Desktop
+├─Downloads
+│   ├─cargo_0.57.0-7+b1_amd64.deb
+│   ├─cygwin.exe
+│   └─rustc_1.60.0+dfsg1-1_amd64.deb
+├─foo.txt
+├─Music
+│   ├─one.mp3
+│   ├─three.mp3
+│   └─two.mp3
+├─My Projects
+├─Pictures
+│   ├─days
+│   │   ├─evening.bmp
+│   │   ├─morning.tiff
+│   │   └─noon.svg
+│   ├─hello.png
+│   └─seasons
+│     ├─autumn.jpg
+│     ├─spring.gif
+│     ├─summer.png
+│     └─winter.png
+└─Trash
+  ├─bar.md
+  ├─foo.txt
+  └─old
+    ├─bar.txt
+    ├─baz.txt
+    ├─foo.md
+    └─obsolete
+      ├─does.md
+      ├─tres.txt
+      └─uno.md"
+            .to_string();
+        output
+    }
+
+    /// The expected output for the directory tree tests run against with hidden files.
+    fn expected_output_standard_all() -> String {
         let output: String = "
 ├─.vim
 │   ├─.netrwhist
