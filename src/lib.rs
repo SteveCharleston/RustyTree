@@ -304,7 +304,11 @@ fn recurse_paths(
                 children: TreeChild::None,
             };
 
-            if entry.path().is_dir() && (options.level.is_none() || options.level.unwrap() > indent_level.len()+1) {
+            if entry.path().is_dir()
+                && (options.level.is_none()
+                    || options.level.unwrap() == 0
+                    || options.level.unwrap() > indent_level.len() + 1)
+            {
                 // Either store the successfully retrieved subtree or store an error
                 match recurse_paths(&entry.path(), &recurisve_indent, options) {
                     Ok(sub_tree) => tree_entry.children = TreeChild::Children(sub_tree),
@@ -632,6 +636,43 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[test]
+    /// Verify that a deep nested tree can be limited by the level option.
+    fn test_level_depth() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        let subdirs = vec!["one", "two", "three", "four", "five"];
+        fs::create_dir_all(dir.join("one/two/three/four/five/")).unwrap();
+
+        // skip first since level 0 is the full tree
+        for (i, subdir) in subdirs.iter().enumerate().skip(1) {
+            // Due to arrays starting with index 0 and the tree starting with level 1, we have to
+            // increase the level by one.
+            let cli_contains = Options {
+                level: Some(i + 1),
+                ..Default::default()
+            };
+
+            // Due to the circumstance mentioned above the level for the current index jsut not
+            // contains the current directory.
+            let cli_contains_not = Options {
+                level: Some(i),
+                ..Default::default()
+            };
+
+            assert!(tree(&dir, &cli_contains).contains(subdir));
+            assert!(!tree(&dir, &cli_contains_not).contains(subdir));
+        }
+
+        // Check that a level of zero displasys the whole tree.
+        let cli_zero = Options {
+            level: Some(0),
+            ..Default::default()
+        };
+
+        assert!(tree(&dir, &cli_zero).contains("five"));
     }
 
     /// Create a directory tree with a directory for which access is restricted.
