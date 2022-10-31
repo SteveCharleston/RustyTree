@@ -96,7 +96,7 @@ struct TreeEntry {
     children: TreeChild,
 }
 
-fn longest_fieldentry<'b>(tree: &'b TreeEntry, get_field: &dyn Fn(&TreeEntry) -> String) -> u32 {
+fn longest_fieldentry(tree: &TreeEntry, get_field: &dyn for<'a>Fn(&'a TreeEntry) -> &'a str) -> u32 {
     let mut field_length = get_field(tree).len() as u32; // if conversation overflows, only
                                                          // formatting will be affected
     if let TreeChild::Children(children) = &tree.children {
@@ -701,9 +701,8 @@ mod tests {
         };
 
         // let getter = |t: &TreeEntry| t.name.as_path().as_os_str().to_str().unwrap_or_default();
-        let getter = |t: &TreeEntry| t.name.to_string_lossy().to_string();
         let longest =
-            longest_fieldentry(&tree, &getter);
+            longest_fieldentry(&tree, &|t: &TreeEntry| t.name.as_path().as_os_str().to_str().unwrap_or_default());
         assert_eq!(5, longest);
     }
     /// Create a directory tree with a directory for which access is restricted.
