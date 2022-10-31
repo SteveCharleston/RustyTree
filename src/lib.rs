@@ -96,6 +96,31 @@ struct TreeEntry {
     children: TreeChild,
 }
 
+impl TreeEntry {
+    /// Calculate the length of the longest field.
+    ///
+    /// Goes through the whole tree and subtrees and looks at the given field for every node to
+    /// determine the length of the longest entry. Return those length to enable better formatting
+    /// with this information.
+    fn longest_fieldentry(&self, get_field: &(dyn Fn(&TreeEntry) -> &str + Send + Sync)) -> u32 {
+        let field_length = get_field(self).len() as u32; // if conversation overflows, only
+                                                         // formatting will be affected
+
+        // maybe a match would be better suited, but this looks cleaner
+        let child_max = if let TreeChild::Children(children) = &self.children {
+            children
+                .par_iter()
+                .map(|child| child.longest_fieldentry(&get_field))
+                .max()
+                .unwrap_or_default()
+        } else {
+            0
+        };
+
+        field_length.max(child_max)
+    }
+}
+
 /// Hold the rendered tree as well as number of directories and files to generate the final status
 /// line.
 struct TreeRepresentation {
@@ -326,9 +351,9 @@ fn recurse_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::fs::File;
     use std::os::unix::prelude::PermissionsExt;
+    use std::{fs, vec};
     use tempfile;
 
     #[test]
@@ -675,6 +700,25 @@ mod tests {
         assert!(tree(&dir, &cli_zero).contains("five"));
     }
 
+    #[test]
+    fn test_calc_longest_field() {
+        let tree = TreeEntry {
+            name: PathBuf::from("first"),
+            kind: TreeEntryKind::File,
+            levels: vec![],
+            children: TreeChild::Children(vec![TreeEntry {
+                name: PathBuf::from("Second"),
+                kind: TreeEntryKind::File,
+                levels: vec![],
+                children: TreeChild::None,
+            }]),
+        };
+
+        let longest = tree.longest_fieldentry(&|t: &TreeEntry| {
+            t.name.as_path().as_os_str().to_str().unwrap_or_default()
+        });
+        assert_eq!(6, longest);
+    }
     /// Create a directory tree with a directory for which access is restricted.
     fn create_directoy_no_permissions() -> tempfile::TempDir {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
