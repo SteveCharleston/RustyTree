@@ -96,27 +96,20 @@ struct TreeEntry {
     children: TreeChild,
 }
 
-impl TreeEntry {
-    /// Calculate the length of the longest field.
-    ///
-    /// Goes through the whole tree and subtrees and looks at the given field for every node to
-    /// determine the length of the longest entry. Return those length to enable better formatting
-    /// with this information.
-    fn longest_fieldentry(&self, get_field: impl Fn(&Self) -> &str) -> u32 {
-        let mut field_length = get_field(self).len() as u32; // if conversation overflows, only
-                                                             // formatting will be affected
-        if let TreeChild::Children(children) = &self.children {
-            for child in children {
-                field_length = field_length.max(get_field(child).len() as u32);
+fn longest_fieldentry<'b>(tree: &'b TreeEntry, get_field: &dyn Fn(&TreeEntry) -> String) -> u32 {
+    let mut field_length = get_field(tree).len() as u32; // if conversation overflows, only
+                                                         // formatting will be affected
+    if let TreeChild::Children(children) = &tree.children {
+        for child in children {
+            field_length = field_length.max(get_field(child).len() as u32);
 
-                if let TreeEntryKind::Directory = child.kind {
-                    field_length = field_length.max(child.longest_fieldentry(&get_field));
-                }
+            if let TreeEntryKind::Directory = child.kind {
+                field_length = field_length.max(longest_fieldentry(child, &get_field));
             }
         }
-
-        field_length
     }
+
+    field_length
 }
 
 /// Hold the rendered tree as well as number of directories and files to generate the final status
@@ -707,7 +700,10 @@ mod tests {
             children: TreeChild::None,
         };
 
-        let longest = tree.longest_fieldentry(|t| t.name.as_path().as_os_str().to_str().unwrap_or_default());
+        // let getter = |t: &TreeEntry| t.name.as_path().as_os_str().to_str().unwrap_or_default();
+        let getter = |t: &TreeEntry| t.name.to_string_lossy().to_string();
+        let longest =
+            longest_fieldentry(&tree, &getter);
         assert_eq!(5, longest);
     }
     /// Create a directory tree with a directory for which access is restricted.
