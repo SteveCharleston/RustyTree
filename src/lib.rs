@@ -102,17 +102,20 @@ impl TreeEntry {
     /// Goes through the whole tree and subtrees and looks at the given field for every node to
     /// determine the length of the longest entry. Return those length to enable better formatting
     /// with this information.
-    fn longest_fieldentry(&self, get_field: &dyn for<'a>Fn(&'a TreeEntry) -> &'a str) -> u32 {
+    fn longest_fieldentry(&self, get_field: &dyn for<'a> Fn(&'a TreeEntry) -> &'a str) -> u32 {
         let mut field_length = get_field(self).len() as u32; // if conversation overflows, only
                                                              // formatting will be affected
         if let TreeChild::Children(children) = &self.children {
-            for child in children {
-                field_length = field_length.max(get_field(child).len() as u32);
+            let child_max = children.iter().map(|child| child.longest_fieldentry(&get_field)).max().unwrap();
+            field_length = field_length.max(child_max);
 
-                if let TreeEntryKind::Directory = child.kind {
-                    field_length = field_length.max(child.longest_fieldentry(&get_field));
-                }
-            }
+            // for child in children {
+            //     field_length = field_length.max(get_field(child).len() as u32);
+
+            //     if let TreeEntryKind::Directory = child.kind {
+            //         field_length = field_length.max(child.longest_fieldentry(&get_field));
+            //     }
+            // }
         }
 
         field_length
@@ -704,11 +707,18 @@ mod tests {
             name: PathBuf::from("first"),
             kind: TreeEntryKind::File,
             levels: vec![],
-            children: TreeChild::None,
+            children: TreeChild::Children(vec![TreeEntry {
+                name: PathBuf::from("Second"),
+                kind: TreeEntryKind::File,
+                levels: vec![],
+                children: TreeChild::None,
+            }]),
         };
 
-        let longest = tree.longest_fieldentry(&|t: &TreeEntry| t.name.as_path().as_os_str().to_str().unwrap_or_default());
-        assert_eq!(5, longest);
+        let longest = tree.longest_fieldentry(&|t: &TreeEntry| {
+            t.name.as_path().as_os_str().to_str().unwrap_or_default()
+        });
+        assert_eq!(6, longest);
     }
     /// Create a directory tree with a directory for which access is restricted.
     fn create_directoy_no_permissions() -> tempfile::TempDir {
