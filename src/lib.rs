@@ -104,7 +104,7 @@ impl TreeEntry {
     /// with this information.
     fn longest_fieldentry(
         &self,
-        get_field: &(dyn for<'a> Fn(&'a TreeEntry) -> &'a str + Send + Sync),
+        get_field: &(dyn  Fn(&TreeEntry) -> &str + Send + Sync),
     ) -> u32 {
         let mut field_length = get_field(self).len() as u32; // if conversation overflows, only
                                                              // formatting will be affected
