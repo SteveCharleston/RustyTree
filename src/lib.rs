@@ -102,30 +102,22 @@ impl TreeEntry {
     /// Goes through the whole tree and subtrees and looks at the given field for every node to
     /// determine the length of the longest entry. Return those length to enable better formatting
     /// with this information.
-    fn longest_fieldentry(
-        &self,
-        get_field: &(dyn  Fn(&TreeEntry) -> &str + Send + Sync),
-    ) -> u32 {
-        let mut field_length = get_field(self).len() as u32; // if conversation overflows, only
-                                                             // formatting will be affected
-        if let TreeChild::Children(children) = &self.children {
-            let child_max = children
+    fn longest_fieldentry(&self, get_field: &(dyn Fn(&TreeEntry) -> &str + Send + Sync)) -> u32 {
+        let field_length = get_field(self).len() as u32; // if conversation overflows, only
+                                                         // formatting will be affected
+
+        // maybe a match would be better suited, but this looks cleaner
+        let child_max = if let TreeChild::Children(children) = &self.children {
+            children
                 .par_iter()
                 .map(|child| child.longest_fieldentry(&get_field))
                 .max()
-                .unwrap_or_default();
-            field_length = field_length.max(child_max);
+                .unwrap_or_default()
+        } else {
+            0
+        };
 
-            // for child in children {
-            //     field_length = field_length.max(get_field(child).len() as u32);
-
-            //     if let TreeEntryKind::Directory = child.kind {
-            //         field_length = field_length.max(child.longest_fieldentry(&get_field));
-            //     }
-            // }
-        }
-
-        field_length
+        field_length.max(child_max)
     }
 }
 
