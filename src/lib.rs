@@ -114,8 +114,8 @@ impl TreeEntry {
     /// Goes through the whole tree and subtrees and looks at the given field for every node to
     /// determine the length of the longest entry. Return those length to enable better formatting
     /// with this information.
-    fn longest_fieldentry(&self, get_field: &(dyn Fn(&TreeEntry) -> String + Send + Sync)) -> u32 {
-        let field_length = get_field(self).len() as u32; // if conversation overflows, only
+    fn longest_fieldentry(&self, get_field: &(dyn Fn(&TreeEntry) -> String + Send + Sync)) -> usize {
+        let field_length = get_field(self).len(); // if conversation overflows, only
                                                          // formatting will be affected
 
         // maybe a match would be better suited, but this looks cleaner
@@ -134,17 +134,18 @@ impl TreeEntry {
 }
 
 #[derive(Clone, Default, Debug)]
+/// Store metadata about a TreeEntry.
 struct TreeLevelMeta {
-    /// Group name of file or directory
-    group: Option<String>,
-
     /// Username of file or directory
     user: Option<String>,
+
+    /// Group name of file or directory
+    group: Option<String>,
 }
 
 impl TreeLevelMeta {
     /// Generate a new TreeLevelMeta from the given data metadata
-    fn from(meta: Metadata, user: bool, group: bool) -> TreeLevelMeta {
+    fn from(meta: &Metadata, user: bool, group: bool) -> TreeLevelMeta {
         let user = if user {
             Some(
                 users::get_user_by_uid(meta.uid())
@@ -171,6 +172,15 @@ impl TreeLevelMeta {
 
         TreeLevelMeta { user, group }
     }
+}
+
+/// Cache the lengths of some TreeEntry fields to avoid recalculating them during drawing.
+struct TreeEntryLengths {
+    /// Length of the longest user field
+    user: usize,
+
+    /// Length of the longest group field
+    group: usize,
 }
 
 /// Hold the rendered tree as well as number of directories and files to generate the final status
@@ -245,12 +255,25 @@ fn string_from_opt_field(field: &Option<String>) -> String {
 }
 
 /// Render the given TreeEntry into a string representation.
-fn render_tree_level(entry: &TreeEntry, options: &Options, lscolors: &LsColors) -> String {
+fn render_tree_level(
+    entry: &TreeEntry,
+    options: &Options,
+    sizes: &TreeEntryLengths,
+    lscolors: &LsColors,
+) -> String {
     let style = lscolors.style_for_path(&entry.name);
     let ansi_style = style.map(Style::to_ansi_term_style).unwrap_or_default();
 
     let mut rendered_entry = String::new();
     rendered_entry += "\n";
+
+    if let Some(user) = &entry.meta.user {
+        rendered_entry += format!("{:width$}", user, width = sizes.user + 1).as_str();
+    }
+
+    if let Some(group) = &entry.meta.group {
+        rendered_entry += format!("{:width$}", group, width = sizes.group + 1).as_str();
+    }
 
     for level in &entry.levels {
         let current_level = match level {
@@ -309,7 +332,12 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         meta: Default::default(),
     };
 
-    let full_representation = render_tree(&entry, options, &lscolors);
+    let sizes = TreeEntryLengths {
+        user: entry.longest_fieldentry(&|t: &TreeEntry| string_from_opt_field(&t.meta.user)),
+        group: entry.longest_fieldentry(&|t: &TreeEntry| string_from_opt_field(&t.meta.group)),
+    };
+
+    let full_representation = render_tree(&entry, options, &sizes, &lscolors);
     if !options.noreport {
         full_representation.to_string()
     } else {
@@ -327,9 +355,10 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
 fn render_tree(
     tree_entry: &TreeEntry,
     options: &Options,
+    sizes: &TreeEntryLengths,
     lscolors: &LsColors,
 ) -> TreeRepresentation {
-    let mut current_level = render_tree_level(tree_entry, options, lscolors);
+    let mut current_level = render_tree_level(tree_entry, options, sizes, lscolors);
     let mut directories: u32 = 0;
     let mut files: u32 = 0;
     if let TreeChild::Children(children) = &tree_entry.children {
@@ -339,7 +368,7 @@ fn render_tree(
                 TreeEntryKind::File => files += 1,
             }
 
-            let sub_representation = render_tree(child, options, lscolors);
+            let sub_representation = render_tree(child, options, sizes, lscolors);
             current_level += sub_representation.rendered.as_str();
             directories += sub_representation.directories;
             files += sub_representation.files;
@@ -385,7 +414,7 @@ fn recurse_paths(
                 },
                 levels: current_indent.to_vec(),
                 children: TreeChild::None,
-                meta: TreeLevelMeta::from(entry.metadata().unwrap(), options.user, options.group),
+                meta: TreeLevelMeta::from(&entry.metadata().unwrap(), options.user, options.group),
             };
 
             if entry.path().is_dir()
@@ -760,6 +789,29 @@ mod tests {
         };
 
         assert!(tree(&dir, &cli_zero).contains("five"));
+    }
+
+    #[test]
+    /// Verify correct instantiation of a TreeLevelMeta struct from existing data.
+    fn test_tree_level_meta_construct() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let meta = tmpdir.path().metadata().unwrap();
+
+        let tree_level_meta = TreeLevelMeta::from(&meta, false, false);
+        assert_eq!(None, tree_level_meta.user);
+        assert_eq!(None, tree_level_meta.group);
+
+        let tree_level_meta = TreeLevelMeta::from(&meta, true, false);
+        assert!(tree_level_meta.user.is_some());
+        assert_eq!(None, tree_level_meta.group);
+
+        let tree_level_meta = TreeLevelMeta::from(&meta, false, true);
+        assert_eq!(None, tree_level_meta.user);
+        assert!(tree_level_meta.group.is_some());
+
+        let tree_level_meta = TreeLevelMeta::from(&meta, true, true);
+        assert!(tree_level_meta.user.is_some());
+        assert!(tree_level_meta.group.is_some());
     }
 
     #[test]
