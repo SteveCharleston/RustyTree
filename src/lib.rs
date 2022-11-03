@@ -11,7 +11,8 @@
 use clap::Parser;
 use lscolors::{LsColors, Style};
 use rayon::prelude::*;
-use std::fs::DirEntry;
+use std::fs::{DirEntry, Metadata};
+use std::os::unix::prelude::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::{fmt, fs, io};
 
@@ -49,6 +50,14 @@ pub struct Options {
     #[clap(short = 'L', long)]
     /// Maximal depth of the directory tree
     pub level: Option<usize>,
+
+    #[clap(short = 'g', long)]
+    /// Print the group name or GID
+    pub group: bool,
+
+    #[clap(short = 'u', long)]
+    /// Print the username name or UID
+    pub user: bool,
 
     #[clap(long)]
     /// Omit the file and directory report at the end of the tree
@@ -89,6 +98,9 @@ struct TreeEntry {
     /// Save kind of entry to display it differently
     kind: TreeEntryKind,
 
+    /// Metadata about the file or directory
+    meta: TreeLevelMeta,
+
     /// List of different levels of parent directories up to the root
     levels: Vec<TreeLevel>,
 
@@ -102,7 +114,7 @@ impl TreeEntry {
     /// Goes through the whole tree and subtrees and looks at the given field for every node to
     /// determine the length of the longest entry. Return those length to enable better formatting
     /// with this information.
-    fn longest_fieldentry(&self, get_field: &(dyn Fn(&TreeEntry) -> &str + Send + Sync)) -> u32 {
+    fn longest_fieldentry(&self, get_field: &(dyn Fn(&TreeEntry) -> String + Send + Sync)) -> u32 {
         let field_length = get_field(self).len() as u32; // if conversation overflows, only
                                                          // formatting will be affected
 
@@ -118,6 +130,46 @@ impl TreeEntry {
         };
 
         field_length.max(child_max)
+    }
+}
+
+#[derive(Clone, Default, Debug)]
+struct TreeLevelMeta {
+    /// Group name of file or directory
+    group: Option<String>,
+
+    /// Username of file or directory
+    user: Option<String>,
+}
+
+impl TreeLevelMeta {
+    /// Generate a new TreeLevelMeta from the given data metadata
+    fn from(meta: Metadata, user: bool, group: bool) -> TreeLevelMeta {
+        let user = if user {
+            Some(
+                users::get_user_by_uid(meta.uid())
+                    .unwrap()
+                    .name()
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+
+        let group = if group {
+            Some(
+                users::get_group_by_gid(meta.gid())
+                    .unwrap()
+                    .name()
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+
+        TreeLevelMeta { user, group }
     }
 }
 
@@ -187,6 +239,11 @@ fn read_dir(path: &impl AsRef<Path>, options: &Options) -> Result<Vec<DirEntry>,
     Ok(paths)
 }
 
+/// Extracts a String from an Option or returns Emptry string if None.
+fn string_from_opt_field(field: &Option<String>) -> String {
+    field.as_ref().unwrap_or(&"".to_string()).to_string()
+}
+
 /// Render the given TreeEntry into a string representation.
 fn render_tree_level(entry: &TreeEntry, options: &Options, lscolors: &LsColors) -> String {
     let style = lscolors.style_for_path(&entry.name);
@@ -249,6 +306,7 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
         children: TreeChild::Children(recurse_paths(path, &indent_level, options).unwrap()),
+        meta: Default::default(),
     };
 
     let full_representation = render_tree(&entry, options, &lscolors);
@@ -327,6 +385,7 @@ fn recurse_paths(
                 },
                 levels: current_indent.to_vec(),
                 children: TreeChild::None,
+                meta: TreeLevelMeta::from(entry.metadata().unwrap(), options.user, options.group),
             };
 
             if entry.path().is_dir()
@@ -351,9 +410,9 @@ fn recurse_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::fs::File;
     use std::os::unix::prelude::PermissionsExt;
-    use std::{fs, vec};
     use tempfile;
 
     #[test]
@@ -534,6 +593,7 @@ mod tests {
                 kind: TreeEntryKind::File,
                 levels: level_data,
                 children: TreeChild::None,
+                meta: Default::default(),
             };
             assert_eq!(
                 render_tree_level(&entry, &cli, &lscolors),
@@ -566,6 +626,7 @@ mod tests {
             kind: TreeEntryKind::Directory,
             levels: vec![TreeLevel::TreeBranch],
             children: TreeChild::None,
+            meta: Default::default(),
         };
 
         let fileentry = TreeEntry {
@@ -573,6 +634,7 @@ mod tests {
             kind: TreeEntryKind::File,
             levels: vec![TreeLevel::TreeBranch],
             children: TreeChild::None,
+            meta: Default::default(),
         };
 
         assert_eq!(
@@ -701,24 +763,81 @@ mod tests {
     }
 
     #[test]
+    /// Verify that the recusively looking for the longest string works for nested TreeEntry.
     fn test_calc_longest_field() {
         let tree = TreeEntry {
             name: PathBuf::from("first"),
-            kind: TreeEntryKind::File,
+            kind: TreeEntryKind::Directory,
+            meta: Default::default(),
             levels: vec![],
-            children: TreeChild::Children(vec![TreeEntry {
-                name: PathBuf::from("Second"),
-                kind: TreeEntryKind::File,
-                levels: vec![],
-                children: TreeChild::None,
-            }]),
+            children: TreeChild::Children(vec![
+                TreeEntry {
+                    name: PathBuf::from("Second"),
+                    kind: TreeEntryKind::File,
+                    meta: TreeLevelMeta {
+                        group: Some("foo".to_string()),
+                        user: Some("bar".to_string()),
+                    },
+                    levels: vec![],
+                    children: TreeChild::None,
+                },
+                TreeEntry {
+                    name: PathBuf::from("Third"),
+                    kind: TreeEntryKind::Directory,
+                    meta: TreeLevelMeta {
+                        group: Some("longest".to_string()),
+                        user: Some("short".to_string()),
+                    },
+                    levels: vec![],
+                    children: TreeChild::Children(vec![TreeEntry {
+                        name: PathBuf::from("Last and Best!"),
+                        kind: TreeEntryKind::Directory,
+                        meta: TreeLevelMeta {
+                            group: Some("short".to_string()),
+                            user: Some("not the shortest".to_string()),
+                        },
+                        levels: vec![],
+                        children: TreeChild::Children(vec![TreeEntry {
+                            name: PathBuf::from("moar!"),
+                            kind: TreeEntryKind::File,
+                            meta: Default::default(),
+                            levels: vec![],
+                            children: TreeChild::None,
+                        }]),
+                    }]),
+                },
+            ]),
         };
 
-        let longest = tree.longest_fieldentry(&|t: &TreeEntry| {
-            t.name.as_path().as_os_str().to_str().unwrap_or_default()
-        });
-        assert_eq!(6, longest);
+        let longest_name = tree
+            .longest_fieldentry(&|t: &TreeEntry| t.name.as_path().to_string_lossy().to_string());
+
+        let longest_user =
+            tree.longest_fieldentry(&|t: &TreeEntry| string_from_opt_field(&t.meta.user));
+        let longest_group =
+            tree.longest_fieldentry(&|t: &TreeEntry| string_from_opt_field(&t.meta.group));
+        assert_eq!(14, longest_name);
+        assert_eq!(16, longest_user);
+        assert_eq!(7, longest_group);
     }
+
+    #[test]
+    // Verify that a String is successfully extracted from an Option or emptry String on None.
+    fn test_string_from_opt() {
+        struct TestStruct {
+            foo: Option<String>,
+            bar: Option<String>,
+        }
+
+        let test_struct = TestStruct {
+            foo: Some("Test".to_string()),
+            bar: None,
+        };
+
+        assert_eq!("Test", string_from_opt_field(&test_struct.foo));
+        assert_eq!("", string_from_opt_field(&test_struct.bar));
+    }
+
     /// Create a directory tree with a directory for which access is restricted.
     fn create_directoy_no_permissions() -> tempfile::TempDir {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
