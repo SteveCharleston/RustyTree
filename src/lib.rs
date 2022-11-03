@@ -329,7 +329,7 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
         children: TreeChild::Children(recurse_paths(path, &indent_level, options).unwrap()),
-        meta: Default::default(),
+        meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options.user, options.group),
     };
 
     let sizes = TreeEntryLengths {
