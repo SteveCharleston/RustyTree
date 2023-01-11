@@ -175,6 +175,7 @@ impl TreeLevelMeta {
 }
 
 /// Cache the lengths of some TreeEntry fields to avoid recalculating them during drawing.
+#[derive(Default)]
 struct TreeEntryLengths {
     /// Length of the longest user field
     user: usize,
@@ -615,6 +616,7 @@ mod tests {
         };
 
         let lscolors = LsColors::default();
+        let lengths = TreeEntryLengths::default();
 
         for (level_data, entry_presentation) in test_entries {
             let entry = TreeEntry {
@@ -625,10 +627,10 @@ mod tests {
                 meta: Default::default(),
             };
             assert_eq!(
-                render_tree_level(&entry, &cli, &lscolors),
+                render_tree_level(&entry, &cli, &lengths, &lscolors),
                 entry_presentation
             );
-            print!("{}", render_tree_level(&entry, &cli, &lscolors));
+            print!("{}", render_tree_level(&entry, &cli, &lengths, &lscolors));
         }
     }
 
@@ -643,6 +645,7 @@ mod tests {
         };
 
         let lscolors = LsColors::default();
+        let lengths = TreeEntryLengths::default();
 
         let cli_classify_not = Options {
             path: ".".to_string(),
@@ -667,20 +670,20 @@ mod tests {
         };
 
         assert_eq!(
-            render_tree_level(&direntry, &cli_classify, &lscolors),
+            render_tree_level(&direntry, &cli_classify, &lengths, &lscolors),
             "\n├─dirname/"
         );
         assert_eq!(
-            render_tree_level(&direntry, &cli_classify_not, &lscolors),
+            render_tree_level(&direntry, &cli_classify_not, &lengths, &lscolors),
             "\n├─dirname"
         );
 
         assert_eq!(
-            render_tree_level(&fileentry, &cli_classify, &lscolors),
+            render_tree_level(&fileentry, &cli_classify, &lengths, &lscolors),
             "\n├─filename"
         );
         assert_eq!(
-            render_tree_level(&fileentry, &cli_classify_not, &lscolors),
+            render_tree_level(&fileentry, &cli_classify_not, &lengths, &lscolors),
             "\n├─filename"
         );
     }
