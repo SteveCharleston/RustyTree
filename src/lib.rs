@@ -116,7 +116,7 @@ impl TreeEntry {
     /// with this information.
     fn longest_fieldentry(&self, get_field: &(dyn Fn(&TreeEntry) -> String + Send + Sync)) -> usize {
         let field_length = get_field(self).len(); // if conversation overflows, only
-                                                         // formatting will be affected
+                                                  // formatting will be affected
 
         // maybe a match would be better suited, but this looks cleaner
         let child_max = if let TreeChild::Children(children) = &self.children {
