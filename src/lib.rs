@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 
+use ansi_term::Color;
 use clap::Parser;
 use lscolors::{LsColors, Style};
 use rayon::prelude::*;
@@ -309,8 +310,37 @@ fn render_tree_level(
         }
     }
 
-    if let TreeChild::Error(_) = entry.children {
-        rendered_entry += " [Cannot access directory]";
+    if let TreeChild::Error(error_kind) = entry.children {
+        // if we can't access a directory, show a childentry with an error message
+        let error_message = format!(" [Cannot access directory: {error_kind}]");
+        rendered_entry += "\n";
+        // Don't add anything if target dir can't be accessed
+        if !&entry.levels.is_empty() {
+            // iterate over the levels but omit last entry to draw error children correctly
+            for level in &entry.levels[..entry.levels.len().saturating_sub(1)] {
+                // We will only ever face Indents or TreeBars here, so match isn't appropriate
+                if let TreeLevel::Indent = level {
+                    rendered_entry += INDENT_SIGN;
+                } else if let TreeLevel::TreeBar = level {
+                    rendered_entry += format!("{TREE_SIGN}{INDENT_SIGN}").as_str();
+                }
+            }
+
+            // if parent is last, don't add anything, otherwise add TREE_SIGN to connect next entry
+            match entry.levels.last() {
+                Some(TreeLevel::TreeFinalBranch) => {}
+                _ => rendered_entry += TREE_SIGN,
+            }
+            rendered_entry += INDENT_SIGN;
+        }
+
+        rendered_entry += FINAL_BRANCH;
+
+        if options.nocolor {
+            rendered_entry += error_message.as_str();
+        } else {
+            rendered_entry += Color::Red.paint(error_message).to_string().as_str();
+        }
     }
     rendered_entry
 }
@@ -332,7 +362,7 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         name: path.as_ref().to_path_buf(),
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
-        children: TreeChild::Children(recurse_paths(path, &indent_level, options).unwrap()),
+        children: recurse_paths(path, &indent_level, options),
         meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options.user, options.group),
     };
 
@@ -391,8 +421,12 @@ fn recurse_paths(
     path: &impl AsRef<Path>,
     indent_level: &[TreeLevel],
     options: &Options,
-) -> Result<Vec<TreeEntry>, io::Error> {
-    let entries = read_dir(path, options)?;
+) -> TreeChild {
+    let entries = match read_dir(path, options) {
+        Ok(entries) => entries,
+        Err(io_err) => return TreeChild::Error(io_err.kind()),
+    };
+    // let entries = read_dir(path, options)?;
     let entries_len = entries.len();
     let output = entries
         .into_par_iter()
@@ -427,17 +461,14 @@ fn recurse_paths(
                     || options.level.unwrap() > indent_level.len() + 1)
             {
                 // Either store the successfully retrieved subtree or store an error
-                match recurse_paths(&entry.path(), &recurisve_indent, options) {
-                    Ok(sub_tree) => tree_entry.children = TreeChild::Children(sub_tree),
-                    Err(io_err) => tree_entry.children = TreeChild::Error(io_err.kind()),
-                }
+                tree_entry.children = recurse_paths(&entry.path(), &recurisve_indent, options);
             }
 
             tree_entry
         })
         .collect::<Vec<TreeEntry>>();
 
-    Ok(output)
+    TreeChild::Children(output)
 }
 
 #[cfg(test)]
@@ -534,17 +565,63 @@ mod tests {
             noreport: true,
             ..Default::default()
         };
+
+        let cli_colored = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            nocolor: false,
+            noreport: true,
+            ..Default::default()
+        };
+
+        let expected_tree = "
+└─root
+  ├─does
+  │   └─ [Cannot access directory: permission denied]
+  ├─tres
+  │   ├─ichi
+  │   │   └─eins
+  │   │     └─one
+  │   │       └─ [Cannot access directory: permission denied]
+  │   ├─ni
+  │   │   ├─eins
+  │   │   │   └─one
+  │   │   │     └─ [Cannot access directory: permission denied]
+  │   │   └─zwei
+  │   │     └─two
+  │   └─san
+  │     └─zwei
+  └─uno
+    ├─bar.txt
+    └─foo.txt";
+
+        // Can't access root directory of tree
+        let expected_root_error_tree = "/root/does
+└─ [Cannot access directory: permission denied]";
+
         let out = tree(&dir.path(), &cli);
+        let out_root_error = tree(&dir.path().join("root/does"), &cli);
+
+
+        let out_root_error_colored = tree(&dir.path().join("root/does"), &cli_colored);
 
         println!("{}", out);
+        println!("{}", out_root_error);
+        println!("{}", out_root_error_colored);
         assert_eq!(
             out,
+            format!("{}{}", dir.path().to_str().unwrap(), expected_tree)
+        );
+        assert_eq!(
+            out_root_error,
             format!(
                 "{}{}",
                 dir.path().to_str().unwrap(),
-                "\n└─root [Cannot access directory]"
+                expected_root_error_tree
             )
         );
+
+        // Check that the colored error contains color reset character
+        assert!(out_root_error_colored.ends_with("\u{1b}[0m"));
     }
 
     #[test]
@@ -954,7 +1031,23 @@ mod tests {
         fs::create_dir_all(target_dir.join("does")).unwrap();
         File::create(target_dir.join("does/baz.md")).unwrap();
 
-        fs::set_permissions(target_dir, fs::Permissions::from_mode(0o000)).unwrap();
+        fs::create_dir_all(target_dir.join("tres/ichi/eins/one")).unwrap();
+        fs::create_dir_all(target_dir.join("tres/ni/eins/one")).unwrap();
+        fs::create_dir_all(target_dir.join("tres/ni/zwei/two")).unwrap();
+        fs::create_dir_all(target_dir.join("tres/san/zwei")).unwrap();
+        File::create(target_dir.join("tres/ichi/eins/one/hallo.txt")).unwrap();
+
+        fs::set_permissions(target_dir.join("does"), fs::Permissions::from_mode(0o000)).unwrap();
+        fs::set_permissions(
+            target_dir.join("tres/ichi/eins/one"),
+            fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        fs::set_permissions(
+            target_dir.join("tres/ni/eins/one"),
+            fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
 
         tmpdir
     }
