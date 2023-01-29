@@ -52,6 +52,10 @@ pub struct Options {
     /// Maximal depth of the directory tree
     pub level: Option<usize>,
 
+    #[clap(short = 'p', long)]
+    /// Print the group name or GID
+    pub protections: bool,
+
     #[clap(short = 'g', long)]
     /// Print the group name or GID
     pub group: bool,
@@ -140,6 +144,9 @@ impl TreeEntry {
 #[derive(Clone, Default, Debug)]
 /// Store metadata about a TreeEntry.
 struct TreeLevelMeta {
+    /// Chmods of file or directory
+    chmods: Option<u32>,
+
     /// Username of file or directory
     user: Option<String>,
 
@@ -149,7 +156,13 @@ struct TreeLevelMeta {
 
 impl TreeLevelMeta {
     /// Generate a new TreeLevelMeta from the given data metadata
-    fn from(meta: &Metadata, user: bool, group: bool) -> TreeLevelMeta {
+    fn from(meta: &Metadata, chmods: bool, user: bool, group: bool) -> TreeLevelMeta {
+        let chmods = if chmods {
+            Some(meta.mode())
+        } else{
+            None
+        };
+
         let user = if user {
             Some(
                 users::get_user_by_uid(meta.uid())
@@ -174,7 +187,7 @@ impl TreeLevelMeta {
             None
         };
 
-        TreeLevelMeta { user, group }
+        TreeLevelMeta { chmods, user, group }
     }
 }
 
@@ -272,6 +285,10 @@ fn render_tree_level(
     let mut rendered_entry = String::new();
     rendered_entry += "\n";
 
+    if let Some(chmods) = &entry.meta.chmods {
+        rendered_entry += format!("{} ", unix_mode::to_string(*chmods).as_str()).as_str();
+    }
+
     if let Some(user) = &entry.meta.user {
         rendered_entry += format!("{:width$}", user, width = sizes.user + 1).as_str();
     }
@@ -363,7 +380,7 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
         children: recurse_paths(path, &indent_level, options),
-        meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options.user, options.group),
+        meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options.protections, options.user, options.group),
     };
 
     let sizes = TreeEntryLengths {
@@ -452,7 +469,7 @@ fn recurse_paths(
                 },
                 levels: current_indent.to_vec(),
                 children: TreeChild::None,
-                meta: TreeLevelMeta::from(&entry.metadata().unwrap(), options.user, options.group),
+                meta: TreeLevelMeta::from(&entry.metadata().unwrap(), options.protections, options.user, options.group),
             };
 
             if entry.path().is_dir()
@@ -769,11 +786,13 @@ mod tests {
     }
 
     #[test]
-    /// Verify that user and group lengths are taken from the lengths argument.
-    fn test_render_tree_user_and_group() {
+    /// Verify that user and group lengths are taken from the lengths argument and that all options
+    /// are displayed appropriately.
+    fn test_render_tree_all_options() {
         let cli_group_user = Options {
             path: ".".to_string(),
             nocolor: true,
+            protections: true,
             user: true,
             group: true,
             ..Default::default()
@@ -793,21 +812,22 @@ mod tests {
             levels: vec![TreeLevel::TreeBranch],
             children: TreeChild::None,
             meta: TreeLevelMeta {
+                chmods: Some(0o100644),
                 user: Some("foouser".to_string()),
                 group: Some("foogroup".to_string()),
             },
         };
         assert_eq!(
             render_tree_level(&fileentry, &cli_group_user, &lengths_too_small, &lscolors),
-            "\nfoouserfoogroup├─filename"
+            "\n-rw-r--r-- foouserfoogroup├─filename"
         );
         assert_eq!(
             render_tree_level(&fileentry, &cli_group_user, &lengths_correct, &lscolors),
-            "\nfoouser foogroup ├─filename"
+            "\n-rw-r--r-- foouser foogroup ├─filename"
         );
         assert_eq!(
             render_tree_level(&fileentry, &cli_group_user, &lengths_too_big, &lscolors),
-            "\nfoouser    foogroup             ├─filename"
+            "\n-rw-r--r-- foouser    foogroup             ├─filename"
         );
     }
 
@@ -923,19 +943,25 @@ mod tests {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
         let meta = tmpdir.path().metadata().unwrap();
 
-        let tree_level_meta = TreeLevelMeta::from(&meta, false, false);
+        let tree_level_meta = TreeLevelMeta::from(&meta, false, false, false);
         assert_eq!(None, tree_level_meta.user);
         assert_eq!(None, tree_level_meta.group);
 
-        let tree_level_meta = TreeLevelMeta::from(&meta, true, false);
+        let tree_level_meta = TreeLevelMeta::from(&meta, false, true, false);
         assert!(tree_level_meta.user.is_some());
         assert_eq!(None, tree_level_meta.group);
 
-        let tree_level_meta = TreeLevelMeta::from(&meta, false, true);
+        let tree_level_meta = TreeLevelMeta::from(&meta, false, false, true);
         assert_eq!(None, tree_level_meta.user);
         assert!(tree_level_meta.group.is_some());
 
-        let tree_level_meta = TreeLevelMeta::from(&meta, true, true);
+        let tree_level_meta = TreeLevelMeta::from(&meta, false, true, true);
+        assert_eq!(None, tree_level_meta.chmods);
+        assert!(tree_level_meta.user.is_some());
+        assert!(tree_level_meta.group.is_some());
+
+        let tree_level_meta = TreeLevelMeta::from(&meta, true, true, true);
+        assert!(tree_level_meta.chmods.is_some());
         assert!(tree_level_meta.user.is_some());
         assert!(tree_level_meta.group.is_some());
     }
@@ -953,6 +979,7 @@ mod tests {
                     name: PathBuf::from("Second"),
                     kind: TreeEntryKind::File,
                     meta: TreeLevelMeta {
+                        chmods: None,
                         group: Some("foo".to_string()),
                         user: Some("bar".to_string()),
                     },
@@ -963,6 +990,7 @@ mod tests {
                     name: PathBuf::from("Third"),
                     kind: TreeEntryKind::Directory,
                     meta: TreeLevelMeta {
+                        chmods: None,
                         group: Some("longest".to_string()),
                         user: Some("short".to_string()),
                     },
@@ -971,6 +999,7 @@ mod tests {
                         name: PathBuf::from("Last and Best!"),
                         kind: TreeEntryKind::Directory,
                         meta: TreeLevelMeta {
+                            chmods: None,
                             group: Some("short".to_string()),
                             user: Some("not the shortest".to_string()),
                         },
