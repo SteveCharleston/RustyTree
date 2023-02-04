@@ -1122,49 +1122,56 @@ mod tests {
         // let dir = std::path::Path::new("/tmp/rustytree");
         fs::create_dir_all(dir).unwrap();
 
-        File::create(dir.join("foo.txt")).unwrap();
-        File::create(dir.join("bar.txt")).unwrap();
+        let dirs = vec![
+            ".vim/session",
+            "Desktop",
+            "Downloads",
+            "Music",
+            "My Projects",
+            "Pictures/seasons",
+            "Pictures/days",
+            "Trash/old/obsolete",
+        ];
 
-        fs::create_dir_all(dir.join(".vim/session")).unwrap();
-        File::create(dir.join(".vim/vimrc")).unwrap();
-        File::create(dir.join(".vim/.netrwhist")).unwrap();
-        File::create(dir.join(".vim/session/default.vim")).unwrap();
-        File::create(dir.join(".vim/session/testsess.vim")).unwrap();
-        File::create(dir.join(".vim/session/worksess.vim")).unwrap();
+        let files = vec![
+            "foo.txt",
+            "bar.txt",
+            ".vim/vimrc",
+            ".vim/.netrwhist",
+            ".vim/session/default.vim",
+            ".vim/session/testsess.vim",
+            ".vim/session/worksess.vim",
+            "Downloads/cygwin.exe",
+            "Downloads/rustc_1.60.0+dfsg1-1_amd64.deb",
+            "Downloads/cargo_0.57.0-7+b1_amd64.deb",
+            "Music/one.mp3",
+            "Music/two.mp3",
+            "Music/three.mp3",
+            "Pictures/hello.png",
+            "Pictures/days/evening.bmp",
+            "Pictures/days/noon.svg",
+            "Pictures/days/morning.tiff",
+            "Pictures/seasons/autumn.jpg",
+            "Pictures/seasons/spring.gif",
+            "Pictures/seasons/summer.png",
+            "Pictures/seasons/winter.png",
+            "Trash/foo.txt",
+            "Trash/bar.md",
+            "Trash/old/bar.txt",
+            "Trash/old/baz.txt",
+            "Trash/old/foo.md",
+            "Trash/old/obsolete/uno.md",
+            "Trash/old/obsolete/does.md",
+            "Trash/old/obsolete/tres.txt",
+        ];
 
-        fs::create_dir_all(dir.join("Desktop")).unwrap();
-        fs::create_dir_all(dir.join("Downloads")).unwrap();
-        File::create(dir.join("Downloads/cygwin.exe")).unwrap();
-        File::create(dir.join("Downloads/rustc_1.60.0+dfsg1-1_amd64.deb")).unwrap();
-        File::create(dir.join("Downloads/cargo_0.57.0-7+b1_amd64.deb")).unwrap();
+        for directory in &dirs {
+            fs::create_dir_all(dir.join(directory)).unwrap();
+        }
 
-        fs::create_dir_all(dir.join("Music")).unwrap();
-        File::create(dir.join("Music/one.mp3")).unwrap();
-        File::create(dir.join("Music/two.mp3")).unwrap();
-        File::create(dir.join("Music/three.mp3")).unwrap();
-
-        fs::create_dir_all(dir.join("My Projects")).unwrap();
-
-        fs::create_dir_all(dir.join("Pictures/seasons")).unwrap();
-        fs::create_dir_all(dir.join("Pictures/days")).unwrap();
-        File::create(dir.join("Pictures/hello.png")).unwrap();
-        File::create(dir.join("Pictures/days/evening.bmp")).unwrap();
-        File::create(dir.join("Pictures/days/noon.svg")).unwrap();
-        File::create(dir.join("Pictures/days/morning.tiff")).unwrap();
-        File::create(dir.join("Pictures/seasons/autumn.jpg")).unwrap();
-        File::create(dir.join("Pictures/seasons/spring.gif")).unwrap();
-        File::create(dir.join("Pictures/seasons/summer.png")).unwrap();
-        File::create(dir.join("Pictures/seasons/winter.png")).unwrap();
-
-        fs::create_dir_all(dir.join("Trash/old/obsolete")).unwrap();
-        File::create(dir.join("Trash/foo.txt")).unwrap();
-        File::create(dir.join("Trash/bar.md")).unwrap();
-        File::create(dir.join("Trash/old/bar.txt")).unwrap();
-        File::create(dir.join("Trash/old/baz.txt")).unwrap();
-        File::create(dir.join("Trash/old/foo.md")).unwrap();
-        File::create(dir.join("Trash/old/obsolete/uno.md")).unwrap();
-        File::create(dir.join("Trash/old/obsolete/does.md")).unwrap();
-        File::create(dir.join("Trash/old/obsolete/tres.txt")).unwrap();
+        for file in &files {
+            File::create(dir.join(file)).unwrap();
+        }
 
         tmpdir
     }
