@@ -156,14 +156,14 @@ struct TreeLevelMeta {
 
 impl TreeLevelMeta {
     /// Generate a new TreeLevelMeta from the given data metadata
-    fn from(meta: &Metadata, chmods: bool, user: bool, group: bool) -> TreeLevelMeta {
-        let chmods = if chmods {
+    fn from(meta: &Metadata, options: &Options) -> TreeLevelMeta {
+        let chmods = if options.protections {
             Some(meta.mode())
-        } else{
+        } else {
             None
         };
 
-        let user = if user {
+        let user = if options.user {
             Some(
                 users::get_user_by_uid(meta.uid())
                     .unwrap()
@@ -175,7 +175,7 @@ impl TreeLevelMeta {
             None
         };
 
-        let group = if group {
+        let group = if options.group {
             Some(
                 users::get_group_by_gid(meta.gid())
                     .unwrap()
@@ -187,7 +187,11 @@ impl TreeLevelMeta {
             None
         };
 
-        TreeLevelMeta { chmods, user, group }
+        TreeLevelMeta {
+            chmods,
+            user,
+            group,
+        }
     }
 }
 
@@ -380,7 +384,7 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
         children: recurse_paths(path, &indent_level, options),
-        meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options.protections, options.user, options.group),
+        meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options),
     };
 
     let sizes = TreeEntryLengths {
@@ -469,7 +473,7 @@ fn recurse_paths(
                 },
                 levels: current_indent.to_vec(),
                 children: TreeChild::None,
-                meta: TreeLevelMeta::from(&entry.metadata().unwrap(), options.protections, options.user, options.group),
+                meta: TreeLevelMeta::from(&entry.metadata().unwrap(), options),
             };
 
             if entry.path().is_dir()
@@ -617,7 +621,6 @@ mod tests {
 
         let out = tree(&dir.path(), &cli);
         let out_root_error = tree(&dir.path().join("root/does"), &cli);
-
 
         let out_root_error_colored = tree(&dir.path().join("root/does"), &cli_colored);
 
@@ -943,24 +946,55 @@ mod tests {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
         let meta = tmpdir.path().metadata().unwrap();
 
-        let tree_level_meta = TreeLevelMeta::from(&meta, false, false, false);
+        let options = Options {
+            ..Default::default()
+        };
+
+        let tree_level_meta = TreeLevelMeta::from(&meta, &options);
         assert_eq!(None, tree_level_meta.user);
         assert_eq!(None, tree_level_meta.group);
 
-        let tree_level_meta = TreeLevelMeta::from(&meta, false, true, false);
+        let tree_level_meta = TreeLevelMeta::from(
+            &meta,
+            &Options {
+                user: true,
+                ..Default::default()
+            },
+        );
         assert!(tree_level_meta.user.is_some());
         assert_eq!(None, tree_level_meta.group);
 
-        let tree_level_meta = TreeLevelMeta::from(&meta, false, false, true);
+        let tree_level_meta = TreeLevelMeta::from(
+            &meta,
+            &Options {
+                group: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(None, tree_level_meta.user);
         assert!(tree_level_meta.group.is_some());
 
-        let tree_level_meta = TreeLevelMeta::from(&meta, false, true, true);
+        let tree_level_meta = TreeLevelMeta::from(
+            &meta,
+            &Options {
+                user: true,
+                group: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(None, tree_level_meta.chmods);
         assert!(tree_level_meta.user.is_some());
         assert!(tree_level_meta.group.is_some());
 
-        let tree_level_meta = TreeLevelMeta::from(&meta, true, true, true);
+        let tree_level_meta = TreeLevelMeta::from(
+            &meta,
+            &Options {
+                protections: true,
+                user: true,
+                group: true,
+                ..Default::default()
+            },
+        );
         assert!(tree_level_meta.chmods.is_some());
         assert!(tree_level_meta.user.is_some());
         assert!(tree_level_meta.group.is_some());
