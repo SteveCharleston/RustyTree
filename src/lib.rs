@@ -67,6 +67,14 @@ pub struct Options {
     #[clap(long)]
     /// Omit the file and directory report at the end of the tree
     pub noreport: bool,
+
+    #[clap(short = 's', long)]
+    /// Show the size of a file or colelctively of all subfiles of a directory
+    pub sizes: bool,
+
+    #[clap(long)]
+    /// Print the sizes in a human readable way
+    pub humansize: bool,
 }
 
 /// Indentation if no parent exists
@@ -152,6 +160,9 @@ struct TreeLevelMeta {
 
     /// Group name of file or directory
     group: Option<String>,
+
+    /// Size of file or collectively of all subfiles of a directory
+    size: Option<u64>,
 }
 
 impl TreeLevelMeta {
@@ -187,10 +198,17 @@ impl TreeLevelMeta {
             None
         };
 
+        let size = if options.sizes || options.humansize {
+            Some(meta.len())
+        } else {
+            None
+        };
+
         TreeLevelMeta {
             chmods,
             user,
             group,
+            size,
         }
     }
 }
@@ -203,6 +221,9 @@ struct TreeEntryLengths {
 
     /// Length of the longest group field
     group: usize,
+
+    /// Length of the longest size field
+    size: usize,
 }
 
 /// Hold the rendered tree as well as number of directories and files to generate the final status
@@ -301,6 +322,15 @@ fn render_tree_level(
         rendered_entry += format!("{:width$}", group, width = sizes.group + 1).as_str();
     }
 
+    if let Some(size) = &entry.meta.size {
+        let outsize = if options.humansize {
+            humansize::format_size(*size, humansize::BINARY)
+        } else {
+            size.to_string()
+        };
+        rendered_entry += format!("{:<width$}", outsize, width = sizes.size + 1).as_str();
+    }
+
     for level in &entry.levels {
         let current_level = match level {
             TreeLevel::Indent => INDENT_SIGN.to_string(),
@@ -387,9 +417,17 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options),
     };
 
+    // format differently depending on if we display the size human readable
+    let size_func = if options.humansize {
+        |t: &TreeEntry| humansize::format_size(t.meta.size.unwrap_or(0), humansize::BINARY)
+    } else {
+        |t: &TreeEntry| t.meta.size.unwrap_or(0).to_string()
+    };
+
     let sizes = TreeEntryLengths {
         user: entry.longest_fieldentry(&|t: &TreeEntry| string_from_opt_field(&t.meta.user)),
         group: entry.longest_fieldentry(&|t: &TreeEntry| string_from_opt_field(&t.meta.group)),
+        size: entry.longest_fieldentry(&size_func),
     };
 
     let full_representation = render_tree(&entry, options, &sizes, &lscolors);
@@ -572,6 +610,50 @@ mod tests {
                 "{}{}",
                 dir.path().to_str().unwrap(),
                 expected_output_standard_nonhidden()
+            )
+        );
+    }
+
+    #[test]
+    /// Verify that sizes are computed correctly
+    fn test_sizes() {
+        let dir = create_directory_tree();
+        let cli_nonhuman = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            sizes: true,
+            ..Default::default()
+        };
+
+        let cli_human = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            sizes: true,
+            humansize: true,
+            ..Default::default()
+        };
+        let out_nonhuman = tree(&dir.path(), &cli_nonhuman);
+        let out_nhuman = tree(&dir.path(), &cli_human);
+
+        println!("{}", out_nonhuman);
+        assert_eq!(
+            out_nonhuman,
+            format!(
+                "4096 {}{}",
+                dir.path().to_str().unwrap(),
+                expected_output_standard_sizes()
+            )
+        );
+
+        println!("{}", out_nhuman);
+        assert_eq!(
+            out_nhuman,
+            format!(
+                "4 KiB {}{}",
+                dir.path().to_str().unwrap(),
+                expected_output_standard_sizes_human()
             )
         );
     }
@@ -789,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    /// Verify that user and group lengths are taken from the lengths argument and that all options
+    /// Verify that lengths are taken from the lengths argument and that all options
     /// are displayed appropriately.
     fn test_render_tree_all_options() {
         let cli_group_user = Options {
@@ -802,11 +884,20 @@ mod tests {
         };
 
         let lscolors = LsColors::default();
-        let lengths_too_small = TreeEntryLengths { user: 0, group: 0 };
-        let lengths_correct = TreeEntryLengths { user: 7, group: 8 };
+        let lengths_too_small = TreeEntryLengths {
+            user: 0,
+            group: 0,
+            size: 0,
+        };
+        let lengths_correct = TreeEntryLengths {
+            user: 7,
+            group: 8,
+            size: 4,
+        };
         let lengths_too_big = TreeEntryLengths {
             user: 10,
             group: 20,
+            size: 15,
         };
 
         let fileentry = TreeEntry {
@@ -818,19 +909,20 @@ mod tests {
                 chmods: Some(0o100644),
                 user: Some("foouser".to_string()),
                 group: Some("foogroup".to_string()),
+                size: Some(1337),
             },
         };
         assert_eq!(
             render_tree_level(&fileentry, &cli_group_user, &lengths_too_small, &lscolors),
-            "\n-rw-r--r-- foouserfoogroup├─filename"
+            "\n-rw-r--r-- foouserfoogroup1337├─filename"
         );
         assert_eq!(
             render_tree_level(&fileentry, &cli_group_user, &lengths_correct, &lscolors),
-            "\n-rw-r--r-- foouser foogroup ├─filename"
+            "\n-rw-r--r-- foouser foogroup 1337 ├─filename"
         );
         assert_eq!(
             render_tree_level(&fileentry, &cli_group_user, &lengths_too_big, &lscolors),
-            "\n-rw-r--r-- foouser    foogroup             ├─filename"
+            "\n-rw-r--r-- foouser    foogroup             1337            ├─filename"
         );
     }
 
@@ -1016,6 +1108,7 @@ mod tests {
                         chmods: None,
                         group: Some("foo".to_string()),
                         user: Some("bar".to_string()),
+                        size: Some(0),
                     },
                     levels: vec![],
                     children: TreeChild::None,
@@ -1027,6 +1120,7 @@ mod tests {
                         chmods: None,
                         group: Some("longest".to_string()),
                         user: Some("short".to_string()),
+                        size: Some(0),
                     },
                     levels: vec![],
                     children: TreeChild::Children(vec![TreeEntry {
@@ -1036,6 +1130,7 @@ mod tests {
                             chmods: None,
                             group: Some("short".to_string()),
                             user: Some("not the shortest".to_string()),
+                            size: Some(0),
                         },
                         levels: vec![],
                         children: TreeChild::Children(vec![TreeEntry {
@@ -1171,6 +1266,7 @@ mod tests {
 
         for file in &files {
             File::create(dir.join(file)).unwrap();
+            fs::write(dir.join(file), file).unwrap(); // write file path to file
         }
 
         tmpdir
@@ -1280,6 +1376,88 @@ mod tests {
 └─Trash
   └─old
     └─obsolete"
+            .to_string();
+        output
+    }
+
+    /// The expected output for the directory tree tests with file sizes.
+    fn expected_output_standard_sizes() -> String {
+        let output: String = "
+7    ├─bar.txt
+4096 ├─Desktop
+4096 ├─Downloads
+37   │   ├─cargo_0.57.0-7+b1_amd64.deb
+20   │   ├─cygwin.exe
+40   │   └─rustc_1.60.0+dfsg1-1_amd64.deb
+7    ├─foo.txt
+4096 ├─Music
+13   │   ├─one.mp3
+15   │   ├─three.mp3
+13   │   └─two.mp3
+4096 ├─My Projects
+4096 ├─Pictures
+4096 │   ├─days
+25   │   │   ├─evening.bmp
+26   │   │   ├─morning.tiff
+22   │   │   └─noon.svg
+18   │   ├─hello.png
+4096 │   └─seasons
+27   │     ├─autumn.jpg
+27   │     ├─spring.gif
+27   │     ├─summer.png
+27   │     └─winter.png
+4096 └─Trash
+12     ├─bar.md
+13     ├─foo.txt
+4096   └─old
+17       ├─bar.txt
+17       ├─baz.txt
+16       ├─foo.md
+4096     └─obsolete
+26         ├─does.md
+27         ├─tres.txt
+25         └─uno.md"
+            .to_string();
+        output
+    }
+
+    /// The expected output for the directory tree tests with file sizes.
+    fn expected_output_standard_sizes_human() -> String {
+        let output: String = "
+7 B   ├─bar.txt
+4 KiB ├─Desktop
+4 KiB ├─Downloads
+37 B  │   ├─cargo_0.57.0-7+b1_amd64.deb
+20 B  │   ├─cygwin.exe
+40 B  │   └─rustc_1.60.0+dfsg1-1_amd64.deb
+7 B   ├─foo.txt
+4 KiB ├─Music
+13 B  │   ├─one.mp3
+15 B  │   ├─three.mp3
+13 B  │   └─two.mp3
+4 KiB ├─My Projects
+4 KiB ├─Pictures
+4 KiB │   ├─days
+25 B  │   │   ├─evening.bmp
+26 B  │   │   ├─morning.tiff
+22 B  │   │   └─noon.svg
+18 B  │   ├─hello.png
+4 KiB │   └─seasons
+27 B  │     ├─autumn.jpg
+27 B  │     ├─spring.gif
+27 B  │     ├─summer.png
+27 B  │     └─winter.png
+4 KiB └─Trash
+12 B    ├─bar.md
+13 B    ├─foo.txt
+4 KiB   └─old
+17 B      ├─bar.txt
+17 B      ├─baz.txt
+16 B      ├─foo.md
+4 KiB     └─obsolete
+26 B        ├─does.md
+27 B        ├─tres.txt
+25 B        └─uno.md"
             .to_string();
         output
     }
