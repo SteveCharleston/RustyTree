@@ -77,6 +77,10 @@ pub struct Options {
     pub humansize: bool,
 
     #[clap(long)]
+    /// Print the sizes in a human readable way with SI sizes
+    pub si: bool,
+
+    #[clap(long)]
     /// Recursively sum the sizes of files and subdirectories and display that on a folder
     pub sumsize: bool,
 }
@@ -202,7 +206,7 @@ impl TreeLevelMeta {
             None
         };
 
-        let size = if options.sizes || options.humansize || options.sumsize {
+        let size = if options.sizes || options.humansize || options.si || options.sumsize {
             Some(meta.len())
         } else {
             None
@@ -343,6 +347,8 @@ fn render_tree_level(
     if let Some(size) = &entry.meta.size {
         let outsize = if options.humansize {
             humansize::format_size(*size, humansize::BINARY)
+        } else if options.si {
+            humansize::format_size(*size, humansize::DECIMAL)
         } else {
             size.to_string()
         };
@@ -442,6 +448,8 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
     // format differently depending on if we display the size human readable
     let size_func = if options.humansize {
         |t: &TreeEntry| humansize::format_size(t.meta.size.unwrap_or(0), humansize::BINARY)
+    } else if options.si {
+        |t: &TreeEntry| humansize::format_size(t.meta.size.unwrap_or(0), humansize::DECIMAL)
     } else {
         |t: &TreeEntry| t.meta.size.unwrap_or(0).to_string()
     };
@@ -703,6 +711,37 @@ mod tests {
     fn test_sum_children_invalid() {
         let children = TreeChild::None;
         assert_eq!(Some(0), sum_children_sizes(&children));
+    }
+
+    #[test]
+    /// Verify that SI sizes and humansize are rendered differently.
+    fn test_differentiate_size_si_human() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+
+        let cli_human = Options {
+            path: tmpdir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            sizes: true,
+            humansize: true,
+            ..Default::default()
+        };
+
+        let cli_si = Options {
+            path: tmpdir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            sizes: true,
+            si: true,
+            ..Default::default()
+        };
+
+        let out_human = tree(&tmpdir.path(), &cli_human);
+        let out_si = tree(&tmpdir.path(), &cli_si);
+        println!("{}", out_human);
+        println!("{}", out_si);
+        assert!(out_human.starts_with("4 KiB"));
+        assert!(out_si.starts_with("4.10 kB"));
     }
 
     #[test]
