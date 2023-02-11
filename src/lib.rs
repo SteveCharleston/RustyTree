@@ -75,6 +75,10 @@ pub struct Options {
     #[clap(long)]
     /// Print the sizes in a human readable way
     pub humansize: bool,
+
+    #[clap(long)]
+    /// Recursively sum the sizes of files and subdirectories and display that on a folder
+    pub sumsize: bool,
 }
 
 /// Indentation if no parent exists
@@ -198,7 +202,7 @@ impl TreeLevelMeta {
             None
         };
 
-        let size = if options.sizes || options.humansize {
+        let size = if options.sizes || options.humansize || options.sumsize {
             Some(meta.len())
         } else {
             None
@@ -295,6 +299,20 @@ fn read_dir(path: &impl AsRef<Path>, options: &Options) -> Result<Vec<DirEntry>,
 /// Extracts a String from an Option or returns Emptry string if None.
 fn string_from_opt_field(field: &Option<String>) -> String {
     field.as_ref().unwrap_or(&"".to_string()).to_string()
+}
+
+/// Go through the children of a TreeChild and sum their sizes if existant.
+fn sum_children_sizes(children: &TreeChild) -> Option<u64> {
+    if let TreeChild::Children(children) = children {
+        let sum_children_sizes = children
+            .par_iter()
+            .map(|child| child.meta.size.unwrap_or(0))
+            .sum();
+
+        Some(sum_children_sizes)
+    } else {
+        Some(0)
+    }
 }
 
 /// Render the given TreeEntry into a string representation.
@@ -409,13 +427,17 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         true => LsColors::empty(),
     };
 
-    let entry = TreeEntry {
+    let mut entry = TreeEntry {
         name: path.as_ref().to_path_buf(),
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
         children: recurse_paths(path, &indent_level, options),
         meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options),
     };
+
+    if options.sumsize {
+        entry.meta.size = sum_children_sizes(&entry.children);
+    }
 
     // format differently depending on if we display the size human readable
     let size_func = if options.humansize {
@@ -521,6 +543,9 @@ fn recurse_paths(
             {
                 // Either store the successfully retrieved subtree or store an error
                 tree_entry.children = recurse_paths(&entry.path(), &recurisve_indent, options);
+                if options.sumsize {
+                    tree_entry.meta.size = sum_children_sizes(&tree_entry.children)
+                }
             }
 
             tree_entry
@@ -634,8 +659,19 @@ mod tests {
             humansize: true,
             ..Default::default()
         };
+
+        let cli_sumsize = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            sizes: true,
+            sumsize: true,
+            ..Default::default()
+        };
+
         let out_nonhuman = tree(&dir.path(), &cli_nonhuman);
-        let out_nhuman = tree(&dir.path(), &cli_human);
+        let out_human = tree(&dir.path(), &cli_human);
+        let out_sumsize = tree(&dir.path(), &cli_sumsize);
 
         println!("{}", out_nonhuman);
         assert_eq!(
@@ -647,15 +683,26 @@ mod tests {
             )
         );
 
-        println!("{}", out_nhuman);
+        println!("{}", out_human);
         assert_eq!(
-            out_nhuman,
+            out_human,
             format!(
                 "4 KiB {}{}",
                 dir.path().to_str().unwrap(),
                 expected_output_standard_sizes_human()
             )
         );
+
+        // Just check if the sum of all subdirs is calculated correctly
+        println!("{}", out_sumsize);
+        assert!(out_sumsize.starts_with("504"));
+    }
+
+    #[test]
+    /// Verify that a non Children TreeChild is handled as Zero.
+    fn test_sum_children_invalid() {
+        let children = TreeChild::None;
+        assert_eq!(Some(0), sum_children_sizes(&children));
     }
 
     #[test]
