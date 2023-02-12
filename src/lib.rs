@@ -275,6 +275,8 @@ enum TreeEntryKind {
     File,
     /// TreeEntry is a Directory
     Directory,
+    /// TreeEntry is a Symlink
+    Symlink(Box<TreeEntryKind>),
 }
 
 /// Read the directory for the given Path and sort the files alphabetically.
@@ -385,6 +387,24 @@ fn render_tree_level(
         }
     }
 
+    if let TreeEntryKind::Symlink(_) = entry.kind {
+        let link_style = match entry.name.metadata() {
+            Ok(metadata) => lscolors.style_for_path_with_metadata(&entry.name, Some(&metadata)),
+            Err(_) => lscolors.style_for_indicator(lscolors::Indicator::MissingFile),
+        };
+
+        let link_ansi_style = link_style
+            .map(Style::to_ansi_term_style)
+            .unwrap_or_default();
+
+        let link_target = link_ansi_style
+            .paint(entry.name.read_link().unwrap_or_default().to_string_lossy())
+            .to_string();
+
+        rendered_entry += " ➜ ";
+        rendered_entry += link_target.as_str();
+    }
+
     if let TreeChild::Error(error_kind) = entry.children {
         // if we can't access a directory, show a childentry with an error message
         let error_message = format!(" [Cannot access directory: {error_kind}]");
@@ -489,6 +509,13 @@ fn render_tree(
             match child.kind {
                 TreeEntryKind::Directory => directories += 1,
                 TreeEntryKind::File => files += 1,
+                TreeEntryKind::Symlink(_) => {
+                    if child.name.is_dir() {
+                        directories += 1;
+                    } else {
+                        files += 1;
+                    }
+                },
             }
 
             let sub_representation = render_tree(child, options, sizes, lscolors);
@@ -534,7 +561,13 @@ fn recurse_paths(
 
             let mut tree_entry = TreeEntry {
                 name: entry.path(),
-                kind: if entry.path().is_dir() {
+                kind: if entry.path().is_symlink() {
+                    if entry.path().is_dir() {
+                        TreeEntryKind::Symlink(Box::new(TreeEntryKind::Directory))
+                    } else {
+                        TreeEntryKind::Symlink(Box::new(TreeEntryKind::File))
+                    }
+                } else if entry.path().is_dir() {
                     TreeEntryKind::Directory
                 } else {
                     TreeEntryKind::File
@@ -545,6 +578,7 @@ fn recurse_paths(
             };
 
             if entry.path().is_dir()
+                && !entry.path().is_symlink()
                 && (options.level.is_none()
                     || options.level.unwrap() == 0
                     || options.level.unwrap() > indent_level.len() + 1)
@@ -742,6 +776,25 @@ mod tests {
         println!("{}", out_si);
         assert!(out_human.starts_with("4 KiB"));
         assert!(out_si.starts_with("4.10 kB"));
+    }
+
+    #[test]
+    /// Verify that symlinks are displayed or followed as requested
+    fn test_handle_symlinks() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        std::os::unix::fs::symlink(tmpdir.path(), tmpdir.path().join("foo")).unwrap();
+        std::os::unix::fs::symlink("target", tmpdir.path().join("dangling")).unwrap();
+
+        let cli = Options {
+            path: tmpdir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            ..Default::default()
+        };
+
+        let out = tree(&tmpdir.path(), &cli);
+        println!("{}", out);
+        assert!(out.contains("dangling ➜ target"));
+        assert!(out.contains("1 directories, 1 files")); // files and dires are counted correctly
     }
 
     #[test]
@@ -1015,6 +1068,7 @@ mod tests {
     #[test]
     /// Verify that the nocolor option turns colorization off.
     fn test_render_tree_nocolor() {
+        std::env::set_var("LS_COLORS", ""); // use default colors for testability
         let dir = create_directory_tree();
 
         let cli_colorful = Options {
