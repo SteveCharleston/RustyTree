@@ -40,6 +40,10 @@ pub struct Options {
     /// Print the full path prefix for each file
     pub fullpath: bool,
 
+    #[clap(short = 'i', long)]
+    /// Do not print indentation and tree lines
+    pub noindent: bool,
+
     #[clap(short = 'a', long)]
     /// Print hidden files as well
     pub all: bool,
@@ -357,14 +361,16 @@ fn render_tree_level(
         rendered_entry += format!("{:<width$}", outsize, width = sizes.size + 1).as_str();
     }
 
-    for level in &entry.levels {
-        let current_level = match level {
-            TreeLevel::Indent => INDENT_SIGN.to_string(),
-            TreeLevel::TreeBar => TREE_SIGN.to_string() + INDENT_SIGN,
-            TreeLevel::TreeBranch => INNER_BRANCH.to_string(),
-            TreeLevel::TreeFinalBranch => FINAL_BRANCH.to_string(),
-        };
-        rendered_entry += current_level.as_str();
+    if !options.noindent {
+        for level in &entry.levels {
+            let current_level = match level {
+                TreeLevel::Indent => INDENT_SIGN.to_string(),
+                TreeLevel::TreeBar => TREE_SIGN.to_string() + INDENT_SIGN,
+                TreeLevel::TreeBranch => INNER_BRANCH.to_string(),
+                TreeLevel::TreeFinalBranch => FINAL_BRANCH.to_string(),
+            };
+            rendered_entry += current_level.as_str();
+        }
     }
 
     // first entry should always be displayed as given, for the rest only the filename if fullpath
@@ -515,7 +521,7 @@ fn render_tree(
                     } else {
                         files += 1;
                     }
-                },
+                }
             }
 
             let sub_representation = render_tree(child, options, sizes, lscolors);
@@ -1106,6 +1112,25 @@ mod tests {
         ] {
             assert!(tree_out.contains(filename));
         }
+    }
+
+    #[test]
+    /// Verify that with the noindent option no tree lines and indentations are drawn.
+    fn test_noindent() {
+        let cli = Options {
+            path: ".".to_string(),
+            noindent: true,
+            noreport: true,
+            nocolor: true,
+            ..Default::default()
+        };
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        fs::create_dir_all(dir.join("foo/bar/baz")).unwrap();
+
+        let tree_out = tree(&dir, &cli);
+        println!("{}", tree_out);
+        assert!(tree_out.ends_with("foo\nbar\nbaz"));
     }
 
     #[test]
