@@ -87,7 +87,7 @@ pub struct Options {
 
     #[clap(long)]
     /// Recursively sum the sizes of files and subdirectories and display that on a folder
-    pub sumsize: bool,
+    pub du: bool,
 
     #[clap(short = 'P', long, value_parser = parse_pattern)]
     /// List only files that match the given pattern
@@ -219,7 +219,7 @@ impl TreeLevelMeta {
             None
         };
 
-        let size = if options.sizes || options.humansize || options.si || options.sumsize {
+        let size = if options.sizes || options.humansize || options.si || options.du {
             Some(meta.len())
         } else {
             None
@@ -509,7 +509,7 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options),
     };
 
-    if options.sumsize {
+    if options.du {
         entry.meta.size = sum_children_sizes(&entry.children);
     }
 
@@ -633,7 +633,7 @@ fn recurse_paths(
             {
                 // Either store the successfully retrieved subtree or store an error
                 tree_entry.children = recurse_paths(&entry.path(), &recurisve_indent, options);
-                if options.sumsize {
+                if options.du {
                     tree_entry.meta.size = sum_children_sizes(&tree_entry.children)
                 }
             }
@@ -755,7 +755,7 @@ mod tests {
             nocolor: true,
             noreport: true,
             sizes: true,
-            sumsize: true,
+            du: true,
             ..Default::default()
         };
 
