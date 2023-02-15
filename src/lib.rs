@@ -397,6 +397,8 @@ fn render_tree_level(
         rendered_entry += format!("{:<width$}", outsize, width = sizes.size + 1).as_str();
     }
 
+    let extra_indent = rendered_entry.len() - 1; // save indent to format errors, subtract newline
+
     if !options.noindent {
         for level in &entry.levels {
             let current_level = match level {
@@ -451,6 +453,9 @@ fn render_tree_level(
         // if we can't access a directory, show a childentry with an error message
         let error_message = format!(" [Cannot access directory: {error_kind}]");
         rendered_entry += "\n";
+    if !options.noindent {
+        rendered_entry += " ".repeat(extra_indent).as_str();
+
         // Don't add anything if target dir can't be accessed
         if !&entry.levels.is_empty() {
             // iterate over the levels but omit last entry to draw error children correctly
@@ -472,6 +477,7 @@ fn render_tree_level(
         }
 
         rendered_entry += FINAL_BRANCH;
+    }
 
         if options.nocolor {
             rendered_entry += error_message.as_str();
@@ -1009,6 +1015,47 @@ mod tests {
     }
 
     #[test]
+    /// Verify that missing permissions are indented correct when combined with other metadata.
+    fn test_no_read_permissions_formatting() {
+        let dir = create_directoy_no_permissions();
+        let cli = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            protections: true,
+            ..Default::default()
+        };
+
+        let expected_tree = "
+drwxrwxr-x └─root
+d---------   ├─does
+             │   └─ [Cannot access directory: permission denied]
+drwxrwxr-x   ├─tres
+drwxrwxr-x   │   ├─ichi
+drwxrwxr-x   │   │   └─eins
+d---------   │   │     └─one
+             │   │       └─ [Cannot access directory: permission denied]
+drwxrwxr-x   │   ├─ni
+drwxrwxr-x   │   │   ├─eins
+d---------   │   │   │   └─one
+             │   │   │     └─ [Cannot access directory: permission denied]
+drwxrwxr-x   │   │   └─zwei
+drwxrwxr-x   │   │     └─two
+drwxrwxr-x   │   └─san
+drwxrwxr-x   │     └─zwei
+drwxrwxr-x   └─uno
+-rw-rw-r--     ├─bar.txt
+-rw-rw-r--     └─foo.txt";
+
+        let out = tree(&dir.path(), &cli);
+        println!("{}", out);
+        assert_eq!(
+            out,
+            format!("drwxrwxr-x {}{}", dir.path().to_str().unwrap(), expected_tree)
+        );
+    }
+
+    #[test]
     /// Verify that a directory is sorted correctly.
     fn test_read_dir_sorted() {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
@@ -1480,6 +1527,7 @@ mod tests {
     fn create_directoy_no_permissions() -> tempfile::TempDir {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
         let dir = tmpdir.path();
+        // let dir = std::path::Path::new("/tmp/noperms");
         let target_dir = dir.join("root");
         fs::create_dir_all(dir).unwrap();
         fs::create_dir_all(&target_dir).unwrap();
