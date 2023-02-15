@@ -10,6 +10,7 @@
 
 use ansi_term::Color;
 use clap::Parser;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use lscolors::{LsColors, Style};
 use rayon::prelude::*;
 use std::fs::{DirEntry, Metadata};
@@ -87,6 +88,10 @@ pub struct Options {
     #[clap(long)]
     /// Recursively sum the sizes of files and subdirectories and display that on a folder
     pub sumsize: bool,
+
+    #[clap(short = 'P', long, value_parser = parse_pattern)]
+    /// List only files that match the given pattern
+    pub pattern: Option<GlobSet>,
 }
 
 /// Indentation if no parent exists
@@ -300,6 +305,13 @@ fn read_dir(path: &impl AsRef<Path>, options: &Options) -> Result<Vec<DirEntry>,
         .map(|r| r.expect("Reading file inside a directory")) // not expected to normally fail
         .filter(|r| options.all || !r.file_name().to_string_lossy().starts_with('.')) // hidden
         .filter(|r| !options.dironly || r.path().is_dir()) // directories only
+        .filter(|r| {
+            r.path().is_dir()
+                || options
+                    .pattern
+                    .as_ref()
+                    .map_or(true, |pattern| pattern.is_match(r.file_name()))
+        })
         .collect();
 
     paths.sort_by_key(|entry| entry.path().to_string_lossy().to_lowercase());
@@ -323,6 +335,19 @@ fn sum_children_sizes(children: &TreeChild) -> Option<u64> {
     } else {
         Some(0)
     }
+}
+
+/// Take a list of Glob pattern and create a GlobSet out of them.
+///
+/// The list of pattern is separated by a pipe symbol '|' and all supplied patterns are stored in
+/// the GlobSet. In case of a wrong pattern we will get an error that describes the problem.
+fn parse_pattern(arg: &str) -> Result<GlobSet, globset::Error> {
+    let mut globset = GlobSetBuilder::new();
+    for sub_glob in arg.split('|') {
+        let glob = Glob::new(sub_glob)?;
+        globset.add(glob);
+    }
+    globset.build()
 }
 
 /// Render the given TreeEntry into a string representation.
@@ -785,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    /// Verify that symlinks are displayed or followed as requested
+    /// Verify that symlinks are displayed or followed as requested.
     fn test_handle_symlinks() {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
         std::os::unix::fs::symlink(tmpdir.path(), tmpdir.path().join("foo")).unwrap();
@@ -801,6 +826,61 @@ mod tests {
         println!("{}", out);
         assert!(out.contains("dangling ➜ target"));
         assert!(out.contains("1 directories, 1 files")); // files and dires are counted correctly
+    }
+
+    #[test]
+    /// Verify that legal and illegal pattern are parsed and a correct GlobSet is created.
+    fn test_parse_pattern() {
+        let out = parse_pattern("foo*|bar*").unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out.matches("foo"), vec![0]);
+        assert_eq!(out.matches("bar"), vec![1]);
+
+
+        let out_err = parse_pattern("[*");
+        assert!(out_err.is_err());
+    }
+
+    #[test]
+    /// Verify that filtering of files with globpattern works.
+    fn test_filter_pattern() {
+        let dir = create_directory_tree();
+        let cli = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            pattern: parse_pattern("*.md|*.txt").ok(),
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir.path(), &cli);
+
+        let expected_tree = "
+├─bar.txt
+├─Desktop
+├─Downloads
+├─foo.txt
+├─Music
+├─My Projects
+├─Pictures
+│   ├─days
+│   └─seasons
+└─Trash
+  ├─bar.md
+  ├─foo.txt
+  └─old
+    ├─bar.txt
+    ├─baz.txt
+    ├─foo.md
+    └─obsolete
+      ├─does.md
+      ├─tres.txt
+      └─uno.md".to_string();
+
+        assert_eq!(
+            out,
+            format!("{}{}", dir.path().to_str().unwrap(), expected_tree)
+        );
     }
 
     #[test]
