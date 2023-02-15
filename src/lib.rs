@@ -92,6 +92,10 @@ pub struct Options {
     #[clap(short = 'P', long, value_parser = parse_pattern)]
     /// List only files that match the given pattern
     pub pattern: Option<GlobSet>,
+
+    #[clap(short = 'I', long, value_parser = parse_pattern)]
+    /// Do not files that match the given pattern
+    pub inversepattern: Option<GlobSet>,
 }
 
 /// Indentation if no parent exists
@@ -311,6 +315,13 @@ fn read_dir(path: &impl AsRef<Path>, options: &Options) -> Result<Vec<DirEntry>,
                     .pattern
                     .as_ref()
                     .map_or(true, |pattern| pattern.is_match(r.file_name()))
+        })
+        .filter(|r| {
+            r.path().is_dir()
+                || options
+                    .inversepattern
+                    .as_ref()
+                    .map_or(true, |inverse| !inverse.is_match(r.file_name()))
         })
         .collect();
 
@@ -876,6 +887,52 @@ mod tests {
       ├─does.md
       ├─tres.txt
       └─uno.md".to_string();
+
+        assert_eq!(
+            out,
+            format!("{}{}", dir.path().to_str().unwrap(), expected_tree)
+        );
+    }
+
+    #[test]
+    /// Verify that inverse filtering of files with globpattern works.
+    fn test_filter_inverse_pattern() {
+        let dir = create_directory_tree();
+        let cli = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            inversepattern: parse_pattern("*.md|*.txt").ok(),
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir.path(), &cli);
+
+        let expected_tree = "
+├─Desktop
+├─Downloads
+│   ├─cargo_0.57.0-7+b1_amd64.deb
+│   ├─cygwin.exe
+│   └─rustc_1.60.0+dfsg1-1_amd64.deb
+├─Music
+│   ├─one.mp3
+│   ├─three.mp3
+│   └─two.mp3
+├─My Projects
+├─Pictures
+│   ├─days
+│   │   ├─evening.bmp
+│   │   ├─morning.tiff
+│   │   └─noon.svg
+│   ├─hello.png
+│   └─seasons
+│     ├─autumn.jpg
+│     ├─spring.gif
+│     ├─summer.png
+│     └─winter.png
+└─Trash
+  └─old
+    └─obsolete".to_string();
 
         assert_eq!(
             out,
