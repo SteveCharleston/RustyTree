@@ -96,6 +96,10 @@ pub struct Options {
     #[clap(short = 'I', long, value_parser = parse_pattern)]
     /// Do not files that match the given pattern
     pub inversepattern: Option<GlobSet>,
+
+    #[clap(short = 'x', long)]
+    /// Stay on the filesystem of the given path
+    pub xdev: bool,
 }
 
 /// Indentation if no parent exists
@@ -453,31 +457,31 @@ fn render_tree_level(
         // if we can't access a directory, show a childentry with an error message
         let error_message = format!(" [Cannot access directory: {error_kind}]");
         rendered_entry += "\n";
-    if !options.noindent {
-        rendered_entry += " ".repeat(extra_indent).as_str();
+        if !options.noindent {
+            rendered_entry += " ".repeat(extra_indent).as_str();
 
-        // Don't add anything if target dir can't be accessed
-        if !&entry.levels.is_empty() {
-            // iterate over the levels but omit last entry to draw error children correctly
-            for level in &entry.levels[..entry.levels.len().saturating_sub(1)] {
-                // We will only ever face Indents or TreeBars here, so match isn't appropriate
-                if let TreeLevel::Indent = level {
-                    rendered_entry += INDENT_SIGN;
-                } else if let TreeLevel::TreeBar = level {
-                    rendered_entry += format!("{TREE_SIGN}{INDENT_SIGN}").as_str();
+            // Don't add anything if target dir can't be accessed
+            if !&entry.levels.is_empty() {
+                // iterate over the levels but omit last entry to draw error children correctly
+                for level in &entry.levels[..entry.levels.len().saturating_sub(1)] {
+                    // We will only ever face Indents or TreeBars here, so match isn't appropriate
+                    if let TreeLevel::Indent = level {
+                        rendered_entry += INDENT_SIGN;
+                    } else if let TreeLevel::TreeBar = level {
+                        rendered_entry += format!("{TREE_SIGN}{INDENT_SIGN}").as_str();
+                    }
                 }
+
+                // if parent is last, don't add anything, otherwise add TREE_SIGN to connect next entry
+                match entry.levels.last() {
+                    Some(TreeLevel::TreeFinalBranch) => {}
+                    _ => rendered_entry += TREE_SIGN,
+                }
+                rendered_entry += INDENT_SIGN;
             }
 
-            // if parent is last, don't add anything, otherwise add TREE_SIGN to connect next entry
-            match entry.levels.last() {
-                Some(TreeLevel::TreeFinalBranch) => {}
-                _ => rendered_entry += TREE_SIGN,
-            }
-            rendered_entry += INDENT_SIGN;
+            rendered_entry += FINAL_BRANCH;
         }
-
-        rendered_entry += FINAL_BRANCH;
-    }
 
         if options.nocolor {
             rendered_entry += error_message.as_str();
@@ -630,6 +634,9 @@ fn recurse_paths(
                 && (options.level.is_none()
                     || options.level.unwrap() == 0
                     || options.level.unwrap() > indent_level.len() + 1)
+                && (!options.xdev
+                    || entry.metadata().unwrap().dev()
+                        == Path::new(options.path.as_str()).metadata().unwrap().dev())
             {
                 // Either store the successfully retrieved subtree or store an error
                 tree_entry.children = recurse_paths(&entry.path(), &recurisve_indent, options);
@@ -853,7 +860,6 @@ mod tests {
         assert_eq!(out.matches("foo"), vec![0]);
         assert_eq!(out.matches("bar"), vec![1]);
 
-
         let out_err = parse_pattern("[*");
         assert!(out_err.is_err());
     }
@@ -892,7 +898,8 @@ mod tests {
     └─obsolete
       ├─does.md
       ├─tres.txt
-      └─uno.md".to_string();
+      └─uno.md"
+            .to_string();
 
         assert_eq!(
             out,
@@ -938,11 +945,37 @@ mod tests {
 │     └─winter.png
 └─Trash
   └─old
-    └─obsolete".to_string();
+    └─obsolete"
+            .to_string();
 
         assert_eq!(
             out,
             format!("{}{}", dir.path().to_str().unwrap(), expected_tree)
+        );
+    }
+
+    #[test]
+    /// Verify that file tree is rendered correctly when option to stay on FS is given.
+    fn test_xdev_works() {
+        let dir = create_directory_tree();
+        let cli = Options {
+            path: dir.path().to_string_lossy().to_string(),
+            nocolor: true,
+            noreport: true,
+            xdev: true,
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir.path(), &cli);
+
+        println!("{}", out);
+        assert_eq!(
+            out,
+            format!(
+                "{}{}",
+                dir.path().to_str().unwrap(),
+                expected_output_standard_nonhidden()
+            )
         );
     }
 
@@ -1051,7 +1084,11 @@ drwxrwxr-x   └─uno
         println!("{}", out);
         assert_eq!(
             out,
-            format!("drwxrwxr-x {}{}", dir.path().to_str().unwrap(), expected_tree)
+            format!(
+                "drwxrwxr-x {}{}",
+                dir.path().to_str().unwrap(),
+                expected_tree
+            )
         );
     }
 
