@@ -27,7 +27,7 @@ use std::{fmt, fs, io};
 pub struct Options {
     #[clap(default_value = ".", value_parser)]
     /// Path to the directory to traverse into
-    pub path: String,
+    pub path: PathBuf,
 
     #[clap(short = 'F', long)]
     /// Append a `/' for directories
@@ -636,7 +636,7 @@ fn recurse_paths(
                     || options.level.unwrap() > indent_level.len() + 1)
                 && (!options.xdev
                     || entry.metadata().unwrap().dev()
-                        == Path::new(options.path.as_str()).metadata().unwrap().dev())
+                        == options.path.metadata().unwrap().dev())
             {
                 // Either store the successfully retrieved subtree or store an error
                 tree_entry.children = recurse_paths(&entry.path(), &recurisve_indent, options);
@@ -665,7 +665,7 @@ mod tests {
     fn test_print_paths_all() {
         let dir = create_directory_tree();
         let cli = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             all: true,
@@ -690,7 +690,7 @@ mod tests {
     fn test_print_paths_dironly() {
         let dir = create_directory_tree();
         let cli = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             all: true,
@@ -716,7 +716,7 @@ mod tests {
     fn test_print_paths() {
         let dir = create_directory_tree();
         let cli = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             all: false,
@@ -741,7 +741,7 @@ mod tests {
     fn test_sizes() {
         let dir = create_directory_tree();
         let cli_nonhuman = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             sizes: true,
@@ -749,7 +749,7 @@ mod tests {
         };
 
         let cli_human = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             sizes: true,
@@ -758,7 +758,7 @@ mod tests {
         };
 
         let cli_sumsize = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             sizes: true,
@@ -808,7 +808,7 @@ mod tests {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
 
         let cli_human = Options {
-            path: tmpdir.path().to_string_lossy().to_string(),
+            path: tmpdir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             sizes: true,
@@ -817,7 +817,7 @@ mod tests {
         };
 
         let cli_si = Options {
-            path: tmpdir.path().to_string_lossy().to_string(),
+            path: tmpdir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             sizes: true,
@@ -841,7 +841,7 @@ mod tests {
         std::os::unix::fs::symlink("target", tmpdir.path().join("dangling")).unwrap();
 
         let cli = Options {
-            path: tmpdir.path().to_string_lossy().to_string(),
+            path: tmpdir.path().to_path_buf(),
             nocolor: true,
             ..Default::default()
         };
@@ -869,7 +869,7 @@ mod tests {
     fn test_filter_pattern() {
         let dir = create_directory_tree();
         let cli = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             pattern: parse_pattern("*.md|*.txt").ok(),
@@ -912,7 +912,7 @@ mod tests {
     fn test_filter_inverse_pattern() {
         let dir = create_directory_tree();
         let cli = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             inversepattern: parse_pattern("*.md|*.txt").ok(),
@@ -959,7 +959,7 @@ mod tests {
     fn test_xdev_works() {
         let dir = create_directory_tree();
         let cli = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             xdev: true,
@@ -984,14 +984,14 @@ mod tests {
     fn test_no_read_permissions() {
         let dir = create_directoy_no_permissions();
         let cli = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             ..Default::default()
         };
 
         let cli_colored = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: false,
             noreport: true,
             ..Default::default()
@@ -1052,7 +1052,7 @@ mod tests {
     fn test_no_read_permissions_formatting() {
         let dir = create_directoy_no_permissions();
         let cli = Options {
-            path: dir.path().to_string_lossy().to_string(),
+            path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
             protections: true,
@@ -1158,7 +1158,7 @@ drwxrwxr-x   └─uno
         ];
 
         let cli = Options {
-            path: ".".to_string(),
+            path: PathBuf::from("."),
             nocolor: true,
             ..Default::default()
         };
@@ -1186,7 +1186,7 @@ drwxrwxr-x   └─uno
     /// Verify that directories are correctly classified with a trailing slash.
     fn test_render_tree_entry_classify() {
         let cli_classify = Options {
-            path: ".".to_string(),
+            path: PathBuf::from("."),
             classify: true,
             nocolor: true,
             ..Default::default()
@@ -1196,7 +1196,7 @@ drwxrwxr-x   └─uno
         let lengths = TreeEntryLengths::default();
 
         let cli_classify_not = Options {
-            path: ".".to_string(),
+            path: PathBuf::from("."),
             nocolor: true,
             ..Default::default()
         };
@@ -1241,7 +1241,7 @@ drwxrwxr-x   └─uno
     /// are displayed appropriately.
     fn test_render_tree_all_options() {
         let cli_group_user = Options {
-            path: ".".to_string(),
+            path: PathBuf::from("."),
             nocolor: true,
             protections: true,
             user: true,
@@ -1299,13 +1299,13 @@ drwxrwxr-x   └─uno
         let dir = create_directory_tree();
 
         let cli_colorful = Options {
-            path: ".".to_string(),
+            path: PathBuf::from("."),
             nocolor: false,
             ..Default::default()
         };
 
         let cli_nocolor = Options {
-            path: ".".to_string(),
+            path: PathBuf::from("."),
             nocolor: true,
             ..Default::default()
         };
@@ -1320,7 +1320,7 @@ drwxrwxr-x   └─uno
         let dir = create_directory_tree();
 
         let cli = Options {
-            path: ".".to_string(),
+            path: PathBuf::from("."),
             fullpath: true,
             ..Default::default()
         };
@@ -1339,7 +1339,7 @@ drwxrwxr-x   └─uno
     /// Verify that with the noindent option no tree lines and indentations are drawn.
     fn test_noindent() {
         let cli = Options {
-            path: ".".to_string(),
+            path: PathBuf::from("."),
             noindent: true,
             noreport: true,
             nocolor: true,
