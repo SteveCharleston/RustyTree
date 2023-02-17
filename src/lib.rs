@@ -100,6 +100,10 @@ pub struct Options {
     #[clap(short = 'x', long)]
     /// Stay on the filesystem of the given path
     pub xdev: bool,
+
+    #[clap(long)]
+    /// Print the inode number of the file or directory
+    pub inode: bool,
 }
 
 /// Indentation if no parent exists
@@ -188,6 +192,9 @@ struct TreeLevelMeta {
 
     /// Size of file or collectively of all subfiles of a directory
     size: Option<u64>,
+
+    /// Unique Identifier of the file or directory in form of InodeData
+    inode: Option<InodeData>,
 }
 
 impl TreeLevelMeta {
@@ -229,13 +236,32 @@ impl TreeLevelMeta {
             None
         };
 
+        let inode = if options.inode {
+            Some(InodeData {
+                inode: meta.ino(),
+                dev: meta.dev(),
+            })
+        } else {
+            None
+        };
+
         TreeLevelMeta {
             chmods,
             user,
             group,
             size,
+            inode,
         }
     }
+}
+
+/// Make a file uniquely identifiable with the combinaiton of inode and dev
+#[derive(Clone, Debug, Default)]
+struct InodeData {
+    /// Inode number on the filesystem
+    inode: u64,
+    /// ID of the device that contains the file
+    dev: u64,
 }
 
 /// Cache the lengths of some TreeEntry fields to avoid recalculating them during drawing.
@@ -378,6 +404,9 @@ fn render_tree_level(
     let mut rendered_entry = String::new();
     rendered_entry += "\n";
 
+    if let Some(inode_data) = &entry.meta.inode {
+        rendered_entry += format!("{} ", inode_data.inode).as_str();
+    }
     if let Some(chmods) = &entry.meta.chmods {
         rendered_entry += format!("{} ", unix_mode::to_string(*chmods).as_str()).as_str();
     }
@@ -635,8 +664,7 @@ fn recurse_paths(
                     || options.level.unwrap() == 0
                     || options.level.unwrap() > indent_level.len() + 1)
                 && (!options.xdev
-                    || entry.metadata().unwrap().dev()
-                        == options.path.metadata().unwrap().dev())
+                    || entry.metadata().unwrap().dev() == options.path.metadata().unwrap().dev())
             {
                 // Either store the successfully retrieved subtree or store an error
                 tree_entry.children = recurse_paths(&entry.path(), &recurisve_indent, options);
@@ -1246,6 +1274,7 @@ drwxrwxr-x   └─uno
             protections: true,
             user: true,
             group: true,
+            inode: true,
             ..Default::default()
         };
 
@@ -1276,19 +1305,23 @@ drwxrwxr-x   └─uno
                 user: Some("foouser".to_string()),
                 group: Some("foogroup".to_string()),
                 size: Some(1337),
+                inode: Some(InodeData {
+                    inode: 42002469,
+                    dev: 12345678,
+                }),
             },
         };
         assert_eq!(
             render_tree_level(&fileentry, &cli_group_user, &lengths_too_small, &lscolors),
-            "\n-rw-r--r-- foouserfoogroup1337├─filename"
+            "\n42002469 -rw-r--r-- foouserfoogroup1337├─filename"
         );
         assert_eq!(
             render_tree_level(&fileentry, &cli_group_user, &lengths_correct, &lscolors),
-            "\n-rw-r--r-- foouser foogroup 1337 ├─filename"
+            "\n42002469 -rw-r--r-- foouser foogroup 1337 ├─filename"
         );
         assert_eq!(
             render_tree_level(&fileentry, &cli_group_user, &lengths_too_big, &lscolors),
-            "\n-rw-r--r-- foouser    foogroup             1337            ├─filename"
+            "\n42002469 -rw-r--r-- foouser    foogroup             1337            ├─filename"
         );
     }
 
@@ -1352,6 +1385,34 @@ drwxrwxr-x   └─uno
         let tree_out = tree(&dir, &cli);
         println!("{}", tree_out);
         assert!(tree_out.ends_with("foo\nbar\nbaz"));
+    }
+
+    #[test]
+    /// Verify that inodes are displayed when requested.
+    ///
+    /// Only display inode and filename without the treelines to make testing easier.
+    fn test_inodes_noindent() {
+        let cli = Options {
+            path: PathBuf::from("."),
+            noindent: true,
+            noreport: true,
+            nocolor: true,
+            inode: true,
+            ..Default::default()
+        };
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        fs::create_dir_all(dir.join("foo/bar/baz")).unwrap();
+
+        let tree_out = tree(&dir, &cli);
+        for line in tree_out.lines() {
+            // verify that first element of line is u64, so inode
+            line.split_whitespace()
+                .next()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
+        }
     }
 
     #[test]
@@ -1495,6 +1556,7 @@ drwxrwxr-x   └─uno
                         group: Some("foo".to_string()),
                         user: Some("bar".to_string()),
                         size: Some(0),
+                        ..Default::default()
                     },
                     levels: vec![],
                     children: TreeChild::None,
@@ -1507,6 +1569,7 @@ drwxrwxr-x   └─uno
                         group: Some("longest".to_string()),
                         user: Some("short".to_string()),
                         size: Some(0),
+                        ..Default::default()
                     },
                     levels: vec![],
                     children: TreeChild::Children(vec![TreeEntry {
@@ -1517,6 +1580,7 @@ drwxrwxr-x   └─uno
                             group: Some("short".to_string()),
                             user: Some("not the shortest".to_string()),
                             size: Some(0),
+                            ..Default::default()
                         },
                         levels: vec![],
                         children: TreeChild::Children(vec![TreeEntry {
