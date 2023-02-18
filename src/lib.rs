@@ -8,11 +8,15 @@
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 
+mod errors;
+
 use ansi_term::Color;
 use clap::Parser;
+use errors::TreeError;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use lscolors::{LsColors, Style};
 use rayon::prelude::*;
+use std::collections::HashSet;
 use std::fs::{DirEntry, Metadata};
 use std::os::unix::prelude::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -104,6 +108,10 @@ pub struct Options {
     #[clap(long)]
     /// Print the inode number of the file or directory
     pub inode: bool,
+
+    #[clap(short = 'l', long)]
+    /// Follow symbolic links into directories
+    pub followlinks: bool,
 }
 
 /// Indentation if no parent exists
@@ -256,7 +264,7 @@ impl TreeLevelMeta {
 }
 
 /// Make a file uniquely identifiable with the combinaiton of inode and dev
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 struct InodeData {
     /// Inode number on the filesystem
     inode: u64,
@@ -306,7 +314,7 @@ enum TreeChild {
     /// No children exist or have been read yet
     None,
     /// Directory couldn't be accessed for some reason
-    Error(io::ErrorKind),
+    Error(errors::TreeError),
     /// The expected child entries
     Children(Vec<TreeEntry>),
 }
@@ -482,7 +490,7 @@ fn render_tree_level(
         rendered_entry += link_target.as_str();
     }
 
-    if let TreeChild::Error(error_kind) = entry.children {
+    if let TreeChild::Error(error_kind) = &entry.children {
         // if we can't access a directory, show a childentry with an error message
         let error_message = format!(" [Cannot access directory: {error_kind}]");
         rendered_entry += "\n";
@@ -534,11 +542,17 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         true => LsColors::empty(),
     };
 
+    let seen: Option<HashSet<InodeData>> = if options.followlinks {
+        Some(HashSet::new())
+    } else {
+        None
+    };
+
     let mut entry = TreeEntry {
         name: path.as_ref().to_path_buf(),
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
-        children: recurse_paths(path, &indent_level, options),
+        children: recurse_paths(path, &indent_level, options, &seen),
         meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options),
     };
 
@@ -618,10 +632,11 @@ fn recurse_paths(
     path: &impl AsRef<Path>,
     indent_level: &[TreeLevel],
     options: &Options,
+    seen: &Option<HashSet<InodeData>>,
 ) -> TreeChild {
     let entries = match read_dir(path, options) {
         Ok(entries) => entries,
-        Err(io_err) => return TreeChild::Error(io_err.kind()),
+        Err(io_err) => return TreeChild::Error(TreeError::IoError(io_err.kind())),
     };
     // let entries = read_dir(path, options)?;
     let entries_len = entries.len();
@@ -659,17 +674,40 @@ fn recurse_paths(
             };
 
             if entry.path().is_dir()
-                && !entry.path().is_symlink()
+                && (!entry.path().is_symlink() || options.followlinks)
                 && (options.level.is_none()
                     || options.level.unwrap() == 0
                     || options.level.unwrap() > indent_level.len() + 1)
                 && (!options.xdev
                     || entry.metadata().unwrap().dev() == options.path.metadata().unwrap().dev())
             {
-                // Either store the successfully retrieved subtree or store an error
-                tree_entry.children = recurse_paths(&entry.path(), &recurisve_indent, options);
-                if options.du {
-                    tree_entry.meta.size = sum_children_sizes(&tree_entry.children)
+                let new_seen = match seen {
+                    Some(old_seen) => {
+                        let inode_data = InodeData {
+                            inode: fs::metadata(entry.path()).unwrap().ino(),
+                            dev: fs::metadata(entry.path()).unwrap().dev(),
+                        };
+
+                        let mut new_seen = old_seen.clone();
+                        new_seen.insert(inode_data);
+                        Some(new_seen)
+                    }
+                    None => None,
+                };
+
+                // If we don't look out for duplicate inodes or a new inode has been added, we are
+                // not in a symlink loop. If a new inode has not been added, then it was already
+                // seen and so we are in a loop.
+                if new_seen.is_none() || &new_seen != seen {
+                    // Either store the successfully retrieved subtree or store an error
+                    tree_entry.children =
+                        recurse_paths(&entry.path(), &recurisve_indent, options, &new_seen);
+
+                    if options.du {
+                        tree_entry.meta.size = sum_children_sizes(&tree_entry.children)
+                    }
+                } else {
+                    tree_entry.children = TreeChild::Error(TreeError::SymlinkLoop)
                 }
             }
 
@@ -878,6 +916,27 @@ mod tests {
         println!("{}", out);
         assert!(out.contains("dangling ➜ target"));
         assert!(out.contains("1 directories, 1 files")); // files and dires are counted correctly
+    }
+
+    #[test]
+    /// Verify that symlink loops are detected.
+    fn test_handle_looping_symlinks() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        fs::create_dir_all(dir.join("foo/bar/baz")).unwrap();
+        std::os::unix::fs::symlink(dir.join("foo"), dir.join("foo/bar/baz/bang")).unwrap();
+
+        let cli = Options {
+            path: tmpdir.path().to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            followlinks: true,
+            ..Default::default()
+        };
+
+        let out = tree(&tmpdir.path(), &cli);
+        println!("{}", out);
+        assert!(out.contains("Cannot access directory: Symlink loop detected"));
     }
 
     #[test]
