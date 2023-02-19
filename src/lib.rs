@@ -678,8 +678,6 @@ fn recurse_paths(
                 && (options.level.is_none()
                     || options.level.unwrap() == 0
                     || options.level.unwrap() > indent_level.len() + 1)
-                && (!options.xdev
-                    || entry.metadata().unwrap().dev() == options.path.metadata().unwrap().dev())
             {
                 let new_seen = match seen {
                     Some(old_seen) => {
@@ -698,7 +696,13 @@ fn recurse_paths(
                 // If we don't look out for duplicate inodes or a new inode has been added, we are
                 // not in a symlink loop. If a new inode has not been added, then it was already
                 // seen and so we are in a loop.
-                if new_seen.is_none() || &new_seen != seen {
+                if new_seen.is_some() && &new_seen == seen {
+                    tree_entry.children = TreeChild::Error(TreeError::SymlinkLoop)
+                } else if options.xdev
+                    && entry.metadata().unwrap().dev() != options.path.metadata().unwrap().dev()
+                {
+                    tree_entry.children = TreeChild::Error(TreeError::FilesystemBoundary)
+                } else {
                     // Either store the successfully retrieved subtree or store an error
                     tree_entry.children =
                         recurse_paths(&entry.path(), &recurisve_indent, options, &new_seen);
@@ -706,8 +710,6 @@ fn recurse_paths(
                     if options.du {
                         tree_entry.meta.size = sum_children_sizes(&tree_entry.children)
                     }
-                } else {
-                    tree_entry.children = TreeChild::Error(TreeError::SymlinkLoop)
                 }
             }
 
@@ -937,6 +939,29 @@ mod tests {
         let out = tree(&tmpdir.path(), &cli);
         println!("{}", out);
         assert!(out.contains("Cannot access directory: Symlink loop detected"));
+    }
+
+    #[test]
+    /// Verify that filesystem boundaries are respected.
+    fn test_handle_fs_boundary_xdev() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        fs::create_dir_all(dir.join("foo/bar/baz")).unwrap();
+        fs::create_dir_all(dir.join("/dev/shm/testdir")).unwrap();
+        std::os::unix::fs::symlink(Path::new("/dev/shm/"), dir.join("foo/bar/baz/bang")).unwrap();
+
+        let cli = Options {
+            path: tmpdir.path().to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            followlinks: true,
+            xdev: true,
+            ..Default::default()
+        };
+
+        let out = tree(&tmpdir.path(), &cli);
+        println!("{}", out);
+        assert!(out.contains("Cannot access directory: Not crossing filesystem boundary"));
     }
 
     #[test]

@@ -12,9 +12,8 @@ pub enum TreeError {
     /// Loop in the filesystem constructed with symbolic links.
     SymlinkLoop,
     /// Directory lies on a different filesystem than the one the program was started on.
-    //FilesystemBoundary,
+    FilesystemBoundary,
     /// General IO errors that are wrapped in this enum.
-    //IoError(io::ErrorKind),
     IoError(io::ErrorKind),
 }
 
@@ -23,7 +22,7 @@ impl fmt::Display for TreeError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             TreeError::SymlinkLoop => fmt.write_str("Symlink loop detected"),
-            //TreeError::FilesystemBoundary => fmt.write_str("Not crossing filesystem boundary"),
+            TreeError::FilesystemBoundary => fmt.write_str("Not crossing filesystem boundary"),
             TreeError::IoError(kind) => fmt.write_str(kind.to_string().as_str()),
         }
     }
