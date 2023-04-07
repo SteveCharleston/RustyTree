@@ -112,22 +112,14 @@ pub struct Options {
     #[clap(short = 'l', long)]
     /// Follow symbolic links into directories
     pub followlinks: bool,
+
+    #[clap(value_enum, short = 'S', long, default_value_t=SignType::Ucs)]
+    /// Follow symbolic links into directories
+    pub charset: SignType,
 }
 
-/// Indentation if no parent exists
-const INDENT_SIGN: &str = "  ";
-
-/// Bar if a parent exists
-const TREE_SIGN: &str = "│ ";
-
-/// In front of a file or dir if it is not the last
-const INNER_BRANCH: &str = "├─";
-
-/// In front of a file or dir if it is the last
-const FINAL_BRANCH: &str = "└─";
-
 /// Represent the different possible indentation components of a file.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 enum TreeLevel {
     /// Indentation if no parent exists
     Indent,
@@ -137,6 +129,16 @@ enum TreeLevel {
     TreeBranch,
     /// In front of a file or dir if it is the last
     TreeFinalBranch,
+}
+
+/// Used to encode how the tree lines should be drawn
+#[derive(clap::ValueEnum, Clone, Debug, Default)]
+pub enum SignType {
+    /// Unicode Characters
+    #[default]
+    Ucs,
+    /// ASCII Characters
+    Ascii,
 }
 
 /// Represent a file with all necessary accompanying metadata.
@@ -386,6 +388,24 @@ fn sum_children_sizes(children: &TreeChild) -> Option<u64> {
     }
 }
 
+/// Return the correct character for the given level and font.
+fn draw_character(level_type: &TreeLevel, sign_type: &SignType) -> &'static str {
+    match sign_type {
+        SignType::Ucs => match level_type {
+            TreeLevel::Indent => "  ",
+            TreeLevel::TreeBar => "│   ",
+            TreeLevel::TreeBranch => "├─",
+            TreeLevel::TreeFinalBranch => "└─",
+        },
+        SignType::Ascii => match level_type {
+            TreeLevel::Indent => "  ",
+            TreeLevel::TreeBar => "|   ",
+            TreeLevel::TreeBranch => "|-",
+            TreeLevel::TreeFinalBranch => "`-",
+        },
+    }
+}
+
 /// Take a list of Glob pattern and create a GlobSet out of them.
 ///
 /// The list of pattern is separated by a pipe symbol '|' and all supplied patterns are stored in
@@ -442,13 +462,7 @@ fn render_tree_level(
 
     if !options.noindent {
         for level in &entry.levels {
-            let current_level = match level {
-                TreeLevel::Indent => INDENT_SIGN.to_string(),
-                TreeLevel::TreeBar => TREE_SIGN.to_string() + INDENT_SIGN,
-                TreeLevel::TreeBranch => INNER_BRANCH.to_string(),
-                TreeLevel::TreeFinalBranch => FINAL_BRANCH.to_string(),
-            };
-            rendered_entry += current_level.as_str();
+            rendered_entry += draw_character(level, &options.charset);
         }
     }
 
@@ -503,21 +517,22 @@ fn render_tree_level(
                 for level in &entry.levels[..entry.levels.len().saturating_sub(1)] {
                     // We will only ever face Indents or TreeBars here, so match isn't appropriate
                     if let TreeLevel::Indent = level {
-                        rendered_entry += INDENT_SIGN;
+                        rendered_entry += draw_character(level, &options.charset);
                     } else if let TreeLevel::TreeBar = level {
-                        rendered_entry += format!("{TREE_SIGN}{INDENT_SIGN}").as_str();
+                        rendered_entry += draw_character(level, &options.charset);
                     }
                 }
 
-                // if parent is last, don't add anything, otherwise add TREE_SIGN to connect next entry
+                // If parent is last, just add some space to indent onto the next level, otherwise
+                // add TREE_SIGN to connect next real entry after the error message
                 match entry.levels.last() {
-                    Some(TreeLevel::TreeFinalBranch) => {}
-                    _ => rendered_entry += TREE_SIGN,
+                    Some(TreeLevel::TreeFinalBranch) => {
+                        rendered_entry += draw_character(&TreeLevel::Indent, &options.charset)
+                    }
+                    _ => rendered_entry += draw_character(&TreeLevel::TreeBar, &options.charset),
                 }
-                rendered_entry += INDENT_SIGN;
             }
-
-            rendered_entry += FINAL_BRANCH;
+            rendered_entry += draw_character(&TreeLevel::TreeFinalBranch, &options.charset);
         }
 
         if options.nocolor {
@@ -1432,6 +1447,30 @@ drwxrwxr-x   └─uno
     }
 
     #[test]
+    /// Verify that charset set as ascii renders with ascii characters.
+    fn test_render_tree_ascii() {
+        let dir = create_directory_tree();
+
+        let cli = Options {
+            path: PathBuf::from("."),
+            charset: SignType::Ascii,
+            noreport: true,
+            nocolor: true,
+            ..Default::default()
+        };
+
+        let out = tree(&dir, &cli);
+        assert_eq!(
+            out,
+            format!(
+                "{}{}",
+                dir.path().to_str().unwrap(),
+                expected_output_ascii()
+            )
+        );
+    }
+
+    #[test]
     /// Verify that a full filepath is printed when this option is set.
     fn test_full_path() {
         let dir = create_directory_tree();
@@ -1993,6 +2032,47 @@ drwxrwxr-x   └─uno
 26 B        ├─does.md
 27 B        ├─tres.txt
 25 B        └─uno.md"
+            .to_string();
+        output
+    }
+
+    /// The expected output if ascii charset is chosen.
+    fn expected_output_ascii() -> String {
+        let output: String = "
+|-bar.txt
+|-Desktop
+|-Downloads
+|   |-cargo_0.57.0-7+b1_amd64.deb
+|   |-cygwin.exe
+|   `-rustc_1.60.0+dfsg1-1_amd64.deb
+|-foo.txt
+|-Music
+|   |-one.mp3
+|   |-three.mp3
+|   `-two.mp3
+|-My Projects
+|-Pictures
+|   |-days
+|   |   |-evening.bmp
+|   |   |-morning.tiff
+|   |   `-noon.svg
+|   |-hello.png
+|   `-seasons
+|     |-autumn.jpg
+|     |-spring.gif
+|     |-summer.png
+|     `-winter.png
+`-Trash
+  |-bar.md
+  |-foo.txt
+  `-old
+    |-bar.txt
+    |-baz.txt
+    |-foo.md
+    `-obsolete
+      |-does.md
+      |-tres.txt
+      `-uno.md"
             .to_string();
         output
     }
