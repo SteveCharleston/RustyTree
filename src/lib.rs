@@ -289,6 +289,7 @@ struct TreeEntryLengths {
 
 /// Hold the rendered tree as well as number of directories and files to generate the final status
 /// line.
+#[derive(Clone, Debug)]
 struct TreeRepresentation {
     /// Final rendered string representation of the tree
     rendered: String,
@@ -296,14 +297,17 @@ struct TreeRepresentation {
     directories: u32,
     /// Number of files in the rendered tree
     files: u32,
+    /// Size of all files combined, if requested
+    size: Option<String>,
 }
 
 impl fmt::Display for TreeRepresentation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}\n\n{} directories, {} files",
+            "{}\n\n{}{} directories, {} files",
             self.rendered.trim(),
+            self.size.as_ref().unwrap_or(&"".to_string()),
             self.directories,
             self.files,
         )
@@ -406,6 +410,17 @@ fn draw_character(level_type: &TreeLevel, sign_type: &SignType) -> &'static str 
     }
 }
 
+/// Take the size of a file and render a string representation depending on the wanted format.
+fn render_size(size: u64, options: &Options) -> String {
+    if options.humansize {
+        humansize::format_size(size, humansize::BINARY)
+    } else if options.si {
+        humansize::format_size(size, humansize::DECIMAL)
+    } else {
+        size.to_string()
+    }
+}
+
 /// Take a list of Glob pattern and create a GlobSet out of them.
 ///
 /// The list of pattern is separated by a pipe symbol '|' and all supplied patterns are stored in
@@ -448,14 +463,12 @@ fn render_tree_level(
     }
 
     if let Some(size) = &entry.meta.size {
-        let outsize = if options.humansize {
-            humansize::format_size(*size, humansize::BINARY)
-        } else if options.si {
-            humansize::format_size(*size, humansize::DECIMAL)
-        } else {
-            size.to_string()
-        };
-        rendered_entry += format!("{:<width$}", outsize, width = sizes.size + 1).as_str();
+        rendered_entry += format!(
+            "{:<width$}",
+            render_size(*size, options),
+            width = sizes.size + 1
+        )
+        .as_str();
     }
 
     let extra_indent = rendered_entry.len() - 1; // save indent to format errors, subtract newline
@@ -635,10 +648,27 @@ fn render_tree(
         }
     }
 
+    // Render summed size if requested
+    let size_representation = if options.du {
+        let unit_suffix = if !options.si && !options.humansize {
+            " B"
+        } else {
+            ""
+        };
+
+        tree_entry
+            .meta
+            .size
+            .map(|size| format!("{}{} used in ", render_size(size, options), unit_suffix))
+    } else {
+        None
+    };
+
     TreeRepresentation {
         rendered: current_level,
         directories,
         files,
+        size: size_representation,
     }
 }
 
@@ -876,6 +906,38 @@ mod tests {
         // Just check if the sum of all subdirs is calculated correctly
         println!("{}", out_sumsize);
         assert!(out_sumsize.starts_with("504"));
+    }
+
+    #[test]
+    // Verify that a report for sum of all sizes contains the used space.
+    fn test_sum_size_report() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+
+        let cli_du_only = Options {
+            path: tmpdir.path().to_path_buf(),
+            nocolor: true,
+            du: true,
+            ..Default::default()
+        };
+
+        let cli_human = Options {
+            path: tmpdir.path().to_path_buf(),
+            nocolor: true,
+            du: true,
+            humansize: true,
+            ..Default::default()
+        };
+
+        let out_du_only = tree(&tmpdir.path(), &cli_du_only);
+        let out_human = tree(&tmpdir.path(), &cli_human);
+        println!("{}", out_human);
+        println!("{}", out_du_only);
+        assert!(out_du_only
+            .lines()
+            .last()
+            .unwrap()
+            .starts_with("0 B used in"));
+        assert!(out_human.lines().last().unwrap().starts_with("0 B used in"));
     }
 
     #[test]
