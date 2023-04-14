@@ -396,13 +396,13 @@ fn sum_children_sizes(children: &TreeChild) -> Option<u64> {
 fn draw_character(level_type: &TreeLevel, sign_type: &SignType) -> &'static str {
     match sign_type {
         SignType::Ucs => match level_type {
-            TreeLevel::Indent => "  ",
+            TreeLevel::Indent => "    ",
             TreeLevel::TreeBar => "│   ",
             TreeLevel::TreeBranch => "├─",
             TreeLevel::TreeFinalBranch => "└─",
         },
         SignType::Ascii => match level_type {
-            TreeLevel::Indent => "  ",
+            TreeLevel::Indent => "    ",
             TreeLevel::TreeBar => "|   ",
             TreeLevel::TreeBranch => "|-",
             TreeLevel::TreeFinalBranch => "`-",
@@ -1078,16 +1078,16 @@ mod tests {
 │   ├─days
 │   └─seasons
 └─Trash
-  ├─bar.md
-  ├─foo.txt
-  └─old
-    ├─bar.txt
-    ├─baz.txt
-    ├─foo.md
-    └─obsolete
-      ├─does.md
-      ├─tres.txt
-      └─uno.md"
+    ├─bar.md
+    ├─foo.txt
+    └─old
+        ├─bar.txt
+        ├─baz.txt
+        ├─foo.md
+        └─obsolete
+            ├─does.md
+            ├─tres.txt
+            └─uno.md"
             .to_string();
 
         assert_eq!(
@@ -1128,13 +1128,13 @@ mod tests {
 │   │   └─noon.svg
 │   ├─hello.png
 │   └─seasons
-│     ├─autumn.jpg
-│     ├─spring.gif
-│     ├─summer.png
-│     └─winter.png
+│       ├─autumn.jpg
+│       ├─spring.gif
+│       ├─summer.png
+│       └─winter.png
 └─Trash
-  └─old
-    └─obsolete"
+    └─old
+        └─obsolete"
             .to_string();
 
         assert_eq!(
@@ -1188,24 +1188,24 @@ mod tests {
 
         let expected_tree = "
 └─root
-  ├─does
-  │   └─ [Cannot access directory: permission denied]
-  ├─tres
-  │   ├─ichi
-  │   │   └─eins
-  │   │     └─one
-  │   │       └─ [Cannot access directory: permission denied]
-  │   ├─ni
-  │   │   ├─eins
-  │   │   │   └─one
-  │   │   │     └─ [Cannot access directory: permission denied]
-  │   │   └─zwei
-  │   │     └─two
-  │   └─san
-  │     └─zwei
-  └─uno
-    ├─bar.txt
-    └─foo.txt";
+    ├─does
+    │   └─ [Cannot access directory: permission denied]
+    ├─tres
+    │   ├─ichi
+    │   │   └─eins
+    │   │       └─one
+    │   │           └─ [Cannot access directory: permission denied]
+    │   ├─ni
+    │   │   ├─eins
+    │   │   │   └─one
+    │   │   │       └─ [Cannot access directory: permission denied]
+    │   │   └─zwei
+    │   │       └─two
+    │   └─san
+    │       └─zwei
+    └─uno
+        ├─bar.txt
+        └─foo.txt";
 
         // Can't access root directory of tree
         let expected_root_error_tree = "/root/does
@@ -1250,24 +1250,24 @@ mod tests {
 
         let expected_tree = "
 drwxrwxr-x └─root
-d---------   ├─does
-             │   └─ [Cannot access directory: permission denied]
-drwxrwxr-x   ├─tres
-drwxrwxr-x   │   ├─ichi
-drwxrwxr-x   │   │   └─eins
-d---------   │   │     └─one
-             │   │       └─ [Cannot access directory: permission denied]
-drwxrwxr-x   │   ├─ni
-drwxrwxr-x   │   │   ├─eins
-d---------   │   │   │   └─one
-             │   │   │     └─ [Cannot access directory: permission denied]
-drwxrwxr-x   │   │   └─zwei
-drwxrwxr-x   │   │     └─two
-drwxrwxr-x   │   └─san
-drwxrwxr-x   │     └─zwei
-drwxrwxr-x   └─uno
--rw-rw-r--     ├─bar.txt
--rw-rw-r--     └─foo.txt";
+d---------     ├─does
+               │   └─ [Cannot access directory: permission denied]
+drwxrwxr-x     ├─tres
+drwxrwxr-x     │   ├─ichi
+drwxrwxr-x     │   │   └─eins
+d---------     │   │       └─one
+               │   │           └─ [Cannot access directory: permission denied]
+drwxrwxr-x     │   ├─ni
+drwxrwxr-x     │   │   ├─eins
+d---------     │   │   │   └─one
+               │   │   │       └─ [Cannot access directory: permission denied]
+drwxrwxr-x     │   │   └─zwei
+drwxrwxr-x     │   │       └─two
+drwxrwxr-x     │   └─san
+drwxrwxr-x     │       └─zwei
+drwxrwxr-x     └─uno
+-rw-rw-r--         ├─bar.txt
+-rw-rw-r--         └─foo.txt";
 
         let out = tree(&dir.path(), &cli);
         println!("{}", out);
@@ -1326,7 +1326,7 @@ drwxrwxr-x   └─uno
             ),
             (
                 vec![TreeLevel::Indent, TreeLevel::TreeFinalBranch],
-                "\n  └─filename",
+                "\n    └─filename",
             ),
             (
                 vec![
@@ -1930,21 +1930,21 @@ drwxrwxr-x   └─uno
 │   │   └─noon.svg
 │   ├─hello.png
 │   └─seasons
-│     ├─autumn.jpg
-│     ├─spring.gif
-│     ├─summer.png
-│     └─winter.png
+│       ├─autumn.jpg
+│       ├─spring.gif
+│       ├─summer.png
+│       └─winter.png
 └─Trash
-  ├─bar.md
-  ├─foo.txt
-  └─old
-    ├─bar.txt
-    ├─baz.txt
-    ├─foo.md
-    └─obsolete
-      ├─does.md
-      ├─tres.txt
-      └─uno.md"
+    ├─bar.md
+    ├─foo.txt
+    └─old
+        ├─bar.txt
+        ├─baz.txt
+        ├─foo.md
+        └─obsolete
+            ├─does.md
+            ├─tres.txt
+            └─uno.md"
             .to_string();
         output
     }
@@ -1978,21 +1978,21 @@ drwxrwxr-x   └─uno
 │   │   └─noon.svg
 │   ├─hello.png
 │   └─seasons
-│     ├─autumn.jpg
-│     ├─spring.gif
-│     ├─summer.png
-│     └─winter.png
+│       ├─autumn.jpg
+│       ├─spring.gif
+│       ├─summer.png
+│       └─winter.png
 └─Trash
-  ├─bar.md
-  ├─foo.txt
-  └─old
-    ├─bar.txt
-    ├─baz.txt
-    ├─foo.md
-    └─obsolete
-      ├─does.md
-      ├─tres.txt
-      └─uno.md"
+    ├─bar.md
+    ├─foo.txt
+    └─old
+        ├─bar.txt
+        ├─baz.txt
+        ├─foo.md
+        └─obsolete
+            ├─does.md
+            ├─tres.txt
+            └─uno.md"
             .to_string();
         output
     }
@@ -2010,8 +2010,8 @@ drwxrwxr-x   └─uno
 │   ├─days
 │   └─seasons
 └─Trash
-  └─old
-    └─obsolete"
+    └─old
+        └─obsolete"
             .to_string();
         output
     }
@@ -2038,21 +2038,21 @@ drwxrwxr-x   └─uno
 22   │   │   └─noon.svg
 18   │   ├─hello.png
 4096 │   └─seasons
-27   │     ├─autumn.jpg
-27   │     ├─spring.gif
-27   │     ├─summer.png
-27   │     └─winter.png
+27   │       ├─autumn.jpg
+27   │       ├─spring.gif
+27   │       ├─summer.png
+27   │       └─winter.png
 4096 └─Trash
-12     ├─bar.md
-13     ├─foo.txt
-4096   └─old
-17       ├─bar.txt
-17       ├─baz.txt
-16       ├─foo.md
-4096     └─obsolete
-26         ├─does.md
-27         ├─tres.txt
-25         └─uno.md"
+12       ├─bar.md
+13       ├─foo.txt
+4096     └─old
+17           ├─bar.txt
+17           ├─baz.txt
+16           ├─foo.md
+4096         └─obsolete
+26               ├─does.md
+27               ├─tres.txt
+25               └─uno.md"
             .to_string();
         output
     }
@@ -2079,21 +2079,21 @@ drwxrwxr-x   └─uno
 22 B  │   │   └─noon.svg
 18 B  │   ├─hello.png
 4 KiB │   └─seasons
-27 B  │     ├─autumn.jpg
-27 B  │     ├─spring.gif
-27 B  │     ├─summer.png
-27 B  │     └─winter.png
+27 B  │       ├─autumn.jpg
+27 B  │       ├─spring.gif
+27 B  │       ├─summer.png
+27 B  │       └─winter.png
 4 KiB └─Trash
-12 B    ├─bar.md
-13 B    ├─foo.txt
-4 KiB   └─old
-17 B      ├─bar.txt
-17 B      ├─baz.txt
-16 B      ├─foo.md
-4 KiB     └─obsolete
-26 B        ├─does.md
-27 B        ├─tres.txt
-25 B        └─uno.md"
+12 B      ├─bar.md
+13 B      ├─foo.txt
+4 KiB     └─old
+17 B          ├─bar.txt
+17 B          ├─baz.txt
+16 B          ├─foo.md
+4 KiB         └─obsolete
+26 B              ├─does.md
+27 B              ├─tres.txt
+25 B              └─uno.md"
             .to_string();
         output
     }
@@ -2120,21 +2120,21 @@ drwxrwxr-x   └─uno
 |   |   `-noon.svg
 |   |-hello.png
 |   `-seasons
-|     |-autumn.jpg
-|     |-spring.gif
-|     |-summer.png
-|     `-winter.png
+|       |-autumn.jpg
+|       |-spring.gif
+|       |-summer.png
+|       `-winter.png
 `-Trash
-  |-bar.md
-  |-foo.txt
-  `-old
-    |-bar.txt
-    |-baz.txt
-    |-foo.md
-    `-obsolete
-      |-does.md
-      |-tres.txt
-      `-uno.md"
+    |-bar.md
+    |-foo.txt
+    `-old
+        |-bar.txt
+        |-baz.txt
+        |-foo.md
+        `-obsolete
+            |-does.md
+            |-tres.txt
+            `-uno.md"
             .to_string();
         output
     }
