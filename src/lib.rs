@@ -209,7 +209,11 @@ struct TreeLevelMeta {
 
 impl TreeLevelMeta {
     /// Generate a new TreeLevelMeta from the given data metadata
-    fn from(meta: &Metadata, options: &Options) -> TreeLevelMeta {
+    fn from(metadata: &Result<Metadata, io::Error>, options: &Options) -> TreeLevelMeta {
+        let meta = match metadata {
+            Ok(m) => m,
+            Err(_) => return TreeLevelMeta::default(),
+        };
         let chmods = if options.protections {
             Some(meta.mode())
         } else {
@@ -581,7 +585,7 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
         children: recurse_paths(path, &indent_level, options, &seen),
-        meta: TreeLevelMeta::from(&fs::metadata(path).unwrap(), options),
+        meta: TreeLevelMeta::from(&fs::metadata(path), options),
     };
 
     if options.du {
@@ -715,7 +719,7 @@ fn recurse_paths(
                 },
                 levels: current_indent.to_vec(),
                 children: TreeChild::None,
-                meta: TreeLevelMeta::from(&entry.metadata().unwrap(), options),
+                meta: TreeLevelMeta::from(&entry.metadata(), options),
             };
 
             if entry.path().is_dir()
@@ -1665,10 +1669,27 @@ drwxrwxr-x     └─uno
     }
 
     #[test]
+    /// Verify that a missing start directory is handled.
+    fn test_missing_start_directory() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path().join("non-existing");
+
+        let cli = Options {
+            path: dir.clone(),
+            noreport: true,
+            nocolor: true,
+            ..Default::default()
+        };
+        let out = tree(&dir, &cli);
+        print!("{out}");
+        assert!(out.ends_with("/non-existing\n└─ [Cannot access directory: entity not found]") );
+    }
+
+    #[test]
     /// Verify correct instantiation of a TreeLevelMeta struct from existing data.
     fn test_tree_level_meta_construct() {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
-        let meta = tmpdir.path().metadata().unwrap();
+        let meta = tmpdir.path().metadata();
 
         let options = Options {
             ..Default::default()
