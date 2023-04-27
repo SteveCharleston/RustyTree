@@ -18,6 +18,7 @@ use lscolors::{LsColors, Style};
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs::{DirEntry, Metadata};
+use std::io::BufRead;
 use std::os::unix::prelude::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::{fmt, fs, io};
@@ -116,6 +117,10 @@ pub struct Options {
     #[clap(value_enum, short = 'S', long, default_value_t=SignType::Ucs)]
     /// Follow symbolic links into directories
     pub charset: SignType,
+
+    #[clap(long)]
+    /// Output the file contents
+    pub cat: bool,
 }
 
 /// Represent the different possible indentation components of a file.
@@ -472,6 +477,58 @@ fn render_size(size: u64, options: &Options) -> String {
     }
 }
 
+/// Read the contents of a file and return them.
+///
+/// File contents that can be displayed will be returned, whereas non-printable lines will be
+/// skipped. Retain newlines that where originally in the file while skipping newlines that where
+/// introduced while filtering the non-printable characters.
+fn cat_file(
+    entry: &TreeEntry,
+    extra_indent: usize,
+    options: &Options,
+) -> Result<String, io::Error> {
+    let mut rendered_content = String::new();
+    if let TreeEntryKind::File = entry.kind {
+        let file = fs::File::open(&entry.name)?;
+        let reader = io::BufReader::new(file);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(text) => text,
+                Err(_) => continue,
+            };
+
+            if !line.is_empty() {
+                // remove control characters and avoid lines that would otherwise be empty or
+                // malformatted output from e.g. a line feed
+                let line = line.replace(|c: char| c.is_control(), "");
+
+                // if line was not empty before but now, we should skip it completly
+                if line.is_empty() {
+                    continue;
+                }
+            }
+
+            rendered_content += "\n";
+
+            // handle noindent
+            rendered_content += " ".repeat(extra_indent).as_str();
+            for level in &entry.levels {
+                rendered_content += match level {
+                    TreeLevel::Indent => draw_character(level, &options.charset),
+                    TreeLevel::TreeBar => draw_character(level, &options.charset),
+                    TreeLevel::TreeFinalBranch => {
+                        draw_character(&TreeLevel::Indent, &options.charset)
+                    }
+                    TreeLevel::TreeBranch => draw_character(&TreeLevel::TreeBar, &options.charset),
+                }
+            }
+
+            rendered_content += line.as_str();
+        }
+    }
+    Ok(rendered_content)
+}
+
 /// Take a list of Glob pattern and create a GlobSet out of them.
 ///
 /// The list of pattern is separated by a pipe symbol '|' and all supplied patterns are stored in
@@ -570,8 +627,32 @@ fn render_tree_level(
 
     if let TreeChild::Error(error_kind) = &entry.children {
         // if we can't access a directory, show a childentry with an error message
-        rendered_entry += render_error("Cannot access directory", error_kind, extra_indent, &entry.levels, options).as_str();
+        rendered_entry += render_error(
+            "Cannot access directory",
+            error_kind,
+            extra_indent,
+            &entry.levels,
+            options,
+        )
+        .as_str();
     }
+
+    if options.cat {
+        if let TreeEntryKind::File = entry.kind {
+            rendered_entry += match cat_file(entry, extra_indent, options) {
+                Ok(rendered_file) => rendered_file,
+                Err(error) => render_error(
+                    "Cannot access file",
+                    &TreeError::IoError(error.kind()),
+                    extra_indent,
+                    &entry.levels,
+                    options,
+                ),
+            }
+            .as_str()
+        }
+    }
+
     rendered_entry
 }
 
@@ -994,6 +1075,69 @@ mod tests {
         println!("{}", out_si);
         assert!(out_human.starts_with("4 KiB"));
         assert!(out_si.starts_with("4.10 kB"));
+    }
+
+    #[test]
+    /// Verify that the text content of files it outputted correctly.
+    ///
+    /// Also check that nonprintable characters are filtered out and as a consequence that
+    /// completly binary files do not produce any output at all.
+    fn test_cat_text() {
+        let dir = create_directory_tree_texts();
+        let cli = Options {
+            path: dir.path().to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            cat: true,
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir.path(), &cli);
+        print!("{out}");
+        assert_eq!(
+            out,
+            format!(
+                "{}{}",
+                dir.path().to_str().unwrap(),
+                expected_output_directory_tree_text()
+            )
+        );
+    }
+
+    #[test]
+    /// Verify that an error message is rendered if cat is tried on an unaccessible file.
+    fn test_cat_file_error() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        fs::write(dir.join("testfile"), "").unwrap();
+        fs::set_permissions(dir.join("testfile"), fs::Permissions::from_mode(0o000)).unwrap();
+        let cli = Options {
+            path: dir.to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            cat: true,
+            ..Default::default()
+        };
+        let out = tree(&dir, &cli);
+        assert!(out.ends_with("└─testfile\n    └─ [Cannot access file: permission denied]"))
+    }
+
+    #[test]
+    /// Verify that an invalid utf-8 sequence is simply skipped.
+    fn test_cat_file_invalid_utf8() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        fs::write(dir.join("testfile"), b"line 1\nline 2\xF1\x80\x80\nline 3").unwrap();
+        let cli = Options {
+            path: dir.to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            cat: true,
+            ..Default::default()
+        };
+        let out = tree(&dir, &cli);
+        print!("{out}");
+        assert!(out.ends_with("└─testfile\n    line 1\n    line 3"))
     }
 
     #[test]
@@ -1696,7 +1840,7 @@ drwxrwxr-x     └─uno
         };
         let out = tree(&dir, &cli);
         print!("{out}");
-        assert!(out.ends_with("/non-existing\n└─ [Cannot access directory: entity not found]") );
+        assert!(out.ends_with("/non-existing\n└─ [Cannot access directory: entity not found]"));
     }
 
     #[test]
@@ -1879,6 +2023,154 @@ drwxrwxr-x     └─uno
         .unwrap();
 
         tmpdir
+    }
+
+    /// Create a directory tree with files that contain various texts.
+    ///
+    /// Files will be named after their content. Insert normal text in files as well as text that
+    /// cannot be rendered or no text at all.
+    fn create_directory_tree_texts() -> tempfile::TempDir {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+
+        fs::create_dir_all(dir.join("sub/twosub")).unwrap();
+
+        fs::write(dir.join("sub/empty.txt"), "").unwrap();
+
+        fs::write(
+            dir.join("sub/normal.txt"),
+            "Als Gregor Samsa eines Morgens aus unruhigen Träumen
+erwachte, fand er sich in seinem Bett zu einem ungeheueren Ungeziefer verwandelt.
+Er lag auf seinem panzerartig harten Rücken und sah, wenn er den Kopf ein wenig
+hob, seinen gewölbten, braunen, von bogenförmigen Versteifungen geteilten Bauch,
+auf dessen Höhe sich die Bettdecke, zum gänzlichen Niedergleiten bereit, kaum
+noch erhalten konnte. Seine vielen, im Vergleich zu seinem sonstigen Umfang
+kläglich dünnen Beine flimmerten ihm hilflos vor den Augen.",
+        )
+        .unwrap();
+
+        fs::write(dir.join("sub/normal_paragraphs.txt"),
+"»Was ist mit mir geschehen?«, dachte er. Es war kein Traum. Sein Zimmer, ein richtiges, nur etwas
+zu kleines Menschenzimmer, lag ruhig zwischen den vier wohlbekannten Wänden. Über dem Tisch, auf
+dem eine auseinandergepackte Musterkollektion von Tuchwaren ausgebreitet war – Samsa war Reisender
+– hing das Bild, das er vor kurzem aus einer illustrierten Zeitschrift ausgeschnitten und in einem
+hübschen, vergoldeten Rahmen untergebracht hatte. Es stellte eine Dame dar, die mit einem Pelzhut
+und einer Pelzboa versehen, aufrecht dasaß und einen schweren Pelzmuff, in dem ihr ganzer Unterarm
+verschwunden war, dem Beschauer entgegenhob.
+
+Gregors Blick richtete sich dann zum Fenster, und das trübe Wetter – man hörte Regentropfen auf das
+Fensterblech aufschlagen – machte ihn ganz melancholisch. »Wie wäre es, wenn ich noch ein wenig
+weiterschliefe und alle Narrheiten vergäße«, dachte er, aber das war gänzlich undurchführbar, denn
+er war gewöhnt, auf der rechten Seite zu schlafen, konnte sich aber in seinem gegenwärtigen Zustand
+nicht in diese Lage bringen. Mit welcher Kraft er sich auch auf die rechte Seite warf, immer wieder
+schaukelte er in die Rückenlage zurück. Er versuchte es wohl hundertmal, schloß die Augen, um die
+zappelnden Beine nicht sehen zu müssen, und ließ erst ab, als er in der Seite einen noch nie
+gefühlten, leichten, dumpfen Schmerz zu fühlen begann.
+
+»Ach Gott«, dachte er, »was für einen anstrengenden Beruf habe ich gewählt! Tag aus, Tag ein auf
+der Reise. Die geschäftlichen Aufregungen sind viel größer, als im eigentlichen Geschäft zu Hause,
+und außerdem ist mir noch diese Plage des Reisens auferlegt, die Sorgen um die Zuganschlüsse, das
+unregelmäßige, schlechte Essen, ein immer wechselnder, nie andauernder, nie herzlich werdender
+menschlicher Verkehr. Der Teufel soll das alles holen!« Er fühlte ein leichtes Jucken oben auf dem
+Bauch; schob sich auf dem Rücken langsam näher zum Bettpfosten, um den Kopf besser heben zu können;
+fand die juckende Stelle, die mit lauter kleinen weißen Pünktchen besetzt war, die er nicht zu
+beurteilen verstand; und wollte mit einem Bein die Stelle betasten, zog es aber gleich zurück, denn
+bei der Berührung umwehten ihn Kälteschauer.").unwrap();
+
+        fs::write(
+            dir.join("sub/twosub/nonprintable_mixed_in.txt"),
+            "Er glitt wieder in seine frühere Lage zurück.
+
+»Dies frühzeitige Aufstehen«, dachte er, »macht einen ganz blödsinnig.
+
+Der Mensch muß seinen Schlaf haben.
+Andere Reisende leben wie Haremsfrauen.
+
+Wenn ich zum Beispiel im Laufe des Vormittags ins Gasthaus zurückgehe, um die erlangten
+Aufträge zu überschreiben, sitzen diese Herren erst beim Frühstück.",
+        )
+        .unwrap();
+
+        fs::write(
+            dir.join("sub/twosub/nonprintable_complete.txt"),
+            "
+",
+        )
+        .unwrap();
+
+        fs::write(dir.join("sub/twosub/printable_emojies.txt"), "😳😄").unwrap();
+
+        fs::write(
+            dir.join("x_final.txt"),
+"Das sollte ich bei meinem Chef versuchen; ich würde auf der Stelle hinausfliegen. Wer weiß
+übrigens, ob das nicht sehr gut für mich wäre. Wenn ich mich nicht wegen meiner Eltern
+zurückhielte, ich hätte längst gekündigt, ich wäre vor den Chef hin getreten und hätte ihm meine
+Meinung von Grund des Herzens aus gesagt. Vom Pult hätte er fallen müssen!").unwrap();
+
+        //fs::write(dir.join("missing_perms.txt"), "stay away?").unwrap();
+        //fs::set_permissions(dir.join("missing_perms.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+
+        tmpdir
+    }
+
+    /// Output that should be generated when using the directory tree with texts.
+    fn expected_output_directory_tree_text() -> String {
+        let output: String = "
+├─sub
+│   ├─empty.txt
+│   ├─normal.txt
+│   │   Als Gregor Samsa eines Morgens aus unruhigen Träumen
+│   │   erwachte, fand er sich in seinem Bett zu einem ungeheueren Ungeziefer verwandelt.
+│   │   Er lag auf seinem panzerartig harten Rücken und sah, wenn er den Kopf ein wenig
+│   │   hob, seinen gewölbten, braunen, von bogenförmigen Versteifungen geteilten Bauch,
+│   │   auf dessen Höhe sich die Bettdecke, zum gänzlichen Niedergleiten bereit, kaum
+│   │   noch erhalten konnte. Seine vielen, im Vergleich zu seinem sonstigen Umfang
+│   │   kläglich dünnen Beine flimmerten ihm hilflos vor den Augen.
+│   ├─normal_paragraphs.txt
+│   │   »Was ist mit mir geschehen?«, dachte er. Es war kein Traum. Sein Zimmer, ein richtiges, nur etwas
+│   │   zu kleines Menschenzimmer, lag ruhig zwischen den vier wohlbekannten Wänden. Über dem Tisch, auf
+│   │   dem eine auseinandergepackte Musterkollektion von Tuchwaren ausgebreitet war – Samsa war Reisender
+│   │   – hing das Bild, das er vor kurzem aus einer illustrierten Zeitschrift ausgeschnitten und in einem
+│   │   hübschen, vergoldeten Rahmen untergebracht hatte. Es stellte eine Dame dar, die mit einem Pelzhut
+│   │   und einer Pelzboa versehen, aufrecht dasaß und einen schweren Pelzmuff, in dem ihr ganzer Unterarm
+│   │   verschwunden war, dem Beschauer entgegenhob.
+│   │   
+│   │   Gregors Blick richtete sich dann zum Fenster, und das trübe Wetter – man hörte Regentropfen auf das
+│   │   Fensterblech aufschlagen – machte ihn ganz melancholisch. »Wie wäre es, wenn ich noch ein wenig
+│   │   weiterschliefe und alle Narrheiten vergäße«, dachte er, aber das war gänzlich undurchführbar, denn
+│   │   er war gewöhnt, auf der rechten Seite zu schlafen, konnte sich aber in seinem gegenwärtigen Zustand
+│   │   nicht in diese Lage bringen. Mit welcher Kraft er sich auch auf die rechte Seite warf, immer wieder
+│   │   schaukelte er in die Rückenlage zurück. Er versuchte es wohl hundertmal, schloß die Augen, um die
+│   │   zappelnden Beine nicht sehen zu müssen, und ließ erst ab, als er in der Seite einen noch nie
+│   │   gefühlten, leichten, dumpfen Schmerz zu fühlen begann.
+│   │   
+│   │   »Ach Gott«, dachte er, »was für einen anstrengenden Beruf habe ich gewählt! Tag aus, Tag ein auf
+│   │   der Reise. Die geschäftlichen Aufregungen sind viel größer, als im eigentlichen Geschäft zu Hause,
+│   │   und außerdem ist mir noch diese Plage des Reisens auferlegt, die Sorgen um die Zuganschlüsse, das
+│   │   unregelmäßige, schlechte Essen, ein immer wechselnder, nie andauernder, nie herzlich werdender
+│   │   menschlicher Verkehr. Der Teufel soll das alles holen!« Er fühlte ein leichtes Jucken oben auf dem
+│   │   Bauch; schob sich auf dem Rücken langsam näher zum Bettpfosten, um den Kopf besser heben zu können;
+│   │   fand die juckende Stelle, die mit lauter kleinen weißen Pünktchen besetzt war, die er nicht zu
+│   │   beurteilen verstand; und wollte mit einem Bein die Stelle betasten, zog es aber gleich zurück, denn
+│   │   bei der Berührung umwehten ihn Kälteschauer.
+│   └─twosub
+│       ├─nonprintable_complete.txt
+│       ├─nonprintable_mixed_in.txt
+│       │   Er glitt wieder in seine frühere Lage zurück.
+│       │   »Dies frühzeitige Aufstehen«, dachte er, »macht einen ganz blödsinnig.
+│       │   Der Mensch muß seinen Schlaf haben.
+│       │   Andere Reisende leben wie Haremsfrauen.
+│       │   Wenn ich zum Beispiel im Laufe des Vormittags ins Gasthaus zurückgehe, um die erlangten
+│       │   Aufträge zu überschreiben, sitzen diese Herren erst beim Frühstück.
+│       └─printable_emojies.txt
+│           😳😄
+└─x_final.txt
+    Das sollte ich bei meinem Chef versuchen; ich würde auf der Stelle hinausfliegen. Wer weiß
+    übrigens, ob das nicht sehr gut für mich wäre. Wenn ich mich nicht wegen meiner Eltern
+    zurückhielte, ich hätte längst gekündigt, ich wäre vor den Chef hin getreten und hätte ihm meine
+    Meinung von Grund des Herzens aus gesagt. Vom Pult hätte er fallen müssen!".to_string();
+
+        output
     }
 
     /// Create a common possible directory tree.
