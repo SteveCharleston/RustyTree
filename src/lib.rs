@@ -414,6 +414,53 @@ fn draw_character(level_type: &TreeLevel, sign_type: &SignType) -> &'static str 
     }
 }
 
+/// Render an error as a subtree entry to a given entry.
+fn render_error(
+    error_description: &str,
+    error_kind: &TreeError,
+    extra_indent: usize,
+    levels: &Vec<TreeLevel>,
+    options: &Options,
+) -> String {
+    let mut rendered_error = String::new();
+    let error_message = format!(" [{error_description}: {error_kind}]");
+    rendered_error += "\n";
+    if !options.noindent {
+        rendered_error += " ".repeat(extra_indent).as_str();
+
+        // Don't add anything if target dir can't be accessed
+        if !&levels.is_empty() {
+            // iterate over the levels but omit last entry to draw error children correctly
+            for level in &levels[..levels.len().saturating_sub(1)] {
+                // We will only ever face Indents or TreeBars here, so match isn't appropriate
+                if let TreeLevel::Indent = level {
+                    rendered_error += draw_character(level, &options.charset);
+                } else if let TreeLevel::TreeBar = level {
+                    rendered_error += draw_character(level, &options.charset);
+                }
+            }
+
+            // If parent is last, just add some space to indent onto the next level, otherwise
+            // add TREE_SIGN to connect next real entry after the error message
+            match levels.last() {
+                Some(TreeLevel::TreeFinalBranch) => {
+                    rendered_error += draw_character(&TreeLevel::Indent, &options.charset)
+                }
+                _ => rendered_error += draw_character(&TreeLevel::TreeBar, &options.charset),
+            }
+        }
+        rendered_error += draw_character(&TreeLevel::TreeFinalBranch, &options.charset);
+    }
+
+    if options.nocolor {
+        rendered_error += error_message.as_str();
+    } else {
+        rendered_error += Color::Red.paint(error_message).to_string().as_str();
+    }
+
+    rendered_error
+}
+
 /// Take the size of a file and render a string representation depending on the wanted format.
 fn render_size(size: u64, options: &Options) -> String {
     if options.humansize {
@@ -523,40 +570,7 @@ fn render_tree_level(
 
     if let TreeChild::Error(error_kind) = &entry.children {
         // if we can't access a directory, show a childentry with an error message
-        let error_message = format!(" [Cannot access directory: {error_kind}]");
-        rendered_entry += "\n";
-        if !options.noindent {
-            rendered_entry += " ".repeat(extra_indent).as_str();
-
-            // Don't add anything if target dir can't be accessed
-            if !&entry.levels.is_empty() {
-                // iterate over the levels but omit last entry to draw error children correctly
-                for level in &entry.levels[..entry.levels.len().saturating_sub(1)] {
-                    // We will only ever face Indents or TreeBars here, so match isn't appropriate
-                    if let TreeLevel::Indent = level {
-                        rendered_entry += draw_character(level, &options.charset);
-                    } else if let TreeLevel::TreeBar = level {
-                        rendered_entry += draw_character(level, &options.charset);
-                    }
-                }
-
-                // If parent is last, just add some space to indent onto the next level, otherwise
-                // add TREE_SIGN to connect next real entry after the error message
-                match entry.levels.last() {
-                    Some(TreeLevel::TreeFinalBranch) => {
-                        rendered_entry += draw_character(&TreeLevel::Indent, &options.charset)
-                    }
-                    _ => rendered_entry += draw_character(&TreeLevel::TreeBar, &options.charset),
-                }
-            }
-            rendered_entry += draw_character(&TreeLevel::TreeFinalBranch, &options.charset);
-        }
-
-        if options.nocolor {
-            rendered_entry += error_message.as_str();
-        } else {
-            rendered_entry += Color::Red.paint(error_message).to_string().as_str();
-        }
+        rendered_entry += render_error("Cannot access directory", error_kind, extra_indent, &entry.levels, options).as_str();
     }
     rendered_entry
 }
