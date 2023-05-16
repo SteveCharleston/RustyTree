@@ -356,10 +356,11 @@ enum TreeEntryKind {
 /// * The provided `path` doesn't exist.
 /// * The process lacks permissions to view the contens.
 /// * The `path` points at a non-directory file.
+/// * Directory entries could not be read.
 fn read_dir(path: &impl AsRef<Path>, options: &Options) -> Result<Vec<DirEntry>, io::Error> {
-    // dbg!(PathBuf::from(path.as_ref()));
     let mut paths: Vec<_> = fs::read_dir(path)?
-        .map(|r| r.expect("Reading file inside a directory")) // not expected to normally fail
+        .collect::<Result<Vec<_>, _>>()? // collect stops upon error and saves that into Result
+        .into_iter() // if no error, simply loop over the dir contents
         .filter(|r| options.all || !r.file_name().to_string_lossy().starts_with('.')) // hidden
         .filter(|r| !options.dironly || r.path().is_dir()) // directories only
         .filter(|r| {
