@@ -19,9 +19,10 @@ use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs::{DirEntry, Metadata};
 use std::io::BufRead;
+use std::io::Write;
 use std::os::unix::prelude::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::{fmt, fs, io};
+use std::{fs, io};
 
 #[derive(Debug, Default, Parser)]
 #[clap(
@@ -310,12 +311,11 @@ struct TreeRepresentation {
     size: Option<String>,
 }
 
-impl fmt::Display for TreeRepresentation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}\n\n{}{} directories, {} files",
-            self.rendered.trim(),
+impl TreeRepresentation {
+    /// Format information about number of directories, files and possible size as report string.
+    fn statistics(&self) -> String {
+        format!(
+            "{}{} directories, {} files",
             self.size.as_ref().unwrap_or(&"".to_string()),
             self.directories,
             self.files,
@@ -343,6 +343,16 @@ enum TreeEntryKind {
     Directory,
     /// TreeEntry is a Symlink
     Symlink(Box<TreeEntryKind>),
+}
+
+/// Send the given text into the given writer.
+///
+/// Handle common errors that might be encountered when doing I/O. Especially a broken pipe is no
+/// reason to abort the program, since such behaviour is very common when combining Unix tools with
+/// each other using a pipe.
+fn out(text: &str, output: &mut impl Write) {
+    // Discard all IO errors, since we do not care for them.
+    output.write_all(text.as_bytes()).unwrap_or(())
 }
 
 /// Read the directory for the given Path and sort the files alphabetically.
@@ -487,11 +497,27 @@ fn cat_file(
     entry: &TreeEntry,
     extra_indent: usize,
     options: &Options,
-) -> Result<String, io::Error> {
-    let mut rendered_content = String::new();
+    output: &mut impl Write,
+) -> Result<(), io::Error> {
     if let TreeEntryKind::File = entry.kind {
         let file = fs::File::open(&entry.name)?;
         let reader = io::BufReader::new(file);
+
+        // Generate treebranches in front of every line
+        let mut rendered_content = String::new();
+        rendered_content += "\n";
+
+        // handle noindent
+        rendered_content += " ".repeat(extra_indent).as_str();
+        for level in &entry.levels {
+            rendered_content += match level {
+                TreeLevel::Indent => draw_character(level, &options.charset),
+                TreeLevel::TreeBar => draw_character(level, &options.charset),
+                TreeLevel::TreeFinalBranch => draw_character(&TreeLevel::Indent, &options.charset),
+                TreeLevel::TreeBranch => draw_character(&TreeLevel::TreeBar, &options.charset),
+            }
+        }
+
         for line in reader.lines() {
             let line = match line {
                 Ok(text) => text,
@@ -509,25 +535,11 @@ fn cat_file(
                 }
             }
 
-            rendered_content += "\n";
-
-            // handle noindent
-            rendered_content += " ".repeat(extra_indent).as_str();
-            for level in &entry.levels {
-                rendered_content += match level {
-                    TreeLevel::Indent => draw_character(level, &options.charset),
-                    TreeLevel::TreeBar => draw_character(level, &options.charset),
-                    TreeLevel::TreeFinalBranch => {
-                        draw_character(&TreeLevel::Indent, &options.charset)
-                    }
-                    TreeLevel::TreeBranch => draw_character(&TreeLevel::TreeBar, &options.charset),
-                }
-            }
-
-            rendered_content += line.as_str();
+            out(&rendered_content, output);
+            out(&line, output);
         }
     }
-    Ok(rendered_content)
+    Ok(())
 }
 
 /// Take a list of Glob pattern and create a GlobSet out of them.
@@ -549,12 +561,16 @@ fn render_tree_level(
     options: &Options,
     sizes: &TreeEntryLengths,
     lscolors: &LsColors,
+    output: &mut impl Write,
 ) -> String {
     let style = lscolors.style_for_path(&entry.name);
     let ansi_style = style.map(Style::to_ansi_term_style).unwrap_or_default();
 
     let mut rendered_entry = String::new();
-    rendered_entry += "\n";
+    if !entry.levels.is_empty() {
+        // no newline in front of root directory
+        rendered_entry += "\n";
+    }
 
     if let Some(inode_data) = &entry.meta.inode {
         rendered_entry += format!("{} ", inode_data.inode).as_str();
@@ -580,7 +596,7 @@ fn render_tree_level(
         .as_str();
     }
 
-    let extra_indent = rendered_entry.len() - 1; // save indent to format errors, subtract newline
+    let extra_indent = rendered_entry.len().saturating_sub(1); // save indent to format errors, subtract newline
 
     if !options.noindent {
         for level in &entry.levels {
@@ -638,19 +654,23 @@ fn render_tree_level(
         .as_str();
     }
 
+    out(&rendered_entry, output);
+
     if options.cat {
         if let TreeEntryKind::File = entry.kind {
-            rendered_entry += match cat_file(entry, extra_indent, options) {
-                Ok(rendered_file) => rendered_file,
-                Err(error) => render_error(
-                    "Cannot access file",
-                    &TreeError::IoError(error.kind()),
-                    extra_indent,
-                    &entry.levels,
-                    options,
+            match cat_file(entry, extra_indent, options, output) {
+                Ok(_) => (),
+                Err(error) => out(
+                    &render_error(
+                        "Cannot access file",
+                        &TreeError::IoError(error.kind()),
+                        extra_indent,
+                        &entry.levels,
+                        options,
+                    ),
+                    output,
                 ),
             }
-            .as_str()
         }
     }
 
@@ -664,6 +684,20 @@ fn render_tree_level(
 /// is done in a thread and also some expensive computations might be executed which will also be
 /// threaded to distribute the load amongst the available cores.
 pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
+    let mut out: Vec<u8> = Vec::new();
+    tree_writer(path, options, &mut out);
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// Generate a tree representation of the filesystem and write that into a Writer.
+///
+/// Walk the filesystem starting from the given directory and visit all child directories and files
+/// recursively. Render all the files into a tree like string representation. Each directory visit
+/// is done in a thread and also some expensive computations might be executed which will also be
+/// threaded to distribute the load amongst the available cores. Directly write the tree
+/// representation into the given writer, which will reduce memory usage in case that the writer is
+/// stdout.
+pub fn tree_writer(path: &impl AsRef<Path>, options: &Options, output: &mut impl Write) {
     let indent_level: Vec<TreeLevel> = Vec::new();
     let lscolors = match options.nocolor {
         false => LsColors::from_env().unwrap_or_default(),
@@ -703,15 +737,10 @@ pub fn tree(path: &impl AsRef<Path>, options: &Options) -> String {
         size: entry.longest_fieldentry(&size_func),
     };
 
-    let full_representation = render_tree(&entry, options, &sizes, &lscolors);
+    let full_representation = render_tree(&entry, options, &sizes, &lscolors, output);
     if !options.noreport {
-        full_representation.to_string()
-    } else {
-        // without the report we only need the rendered tree directly
-        full_representation.rendered.trim().to_string()
+        out(&format!("\n\n{}", full_representation.statistics()), output);
     }
-
-    //format!("{:#?}", entry)
 }
 
 /// Generate a string representation of the nested TreeEntry data structure.
@@ -723,8 +752,9 @@ fn render_tree(
     options: &Options,
     sizes: &TreeEntryLengths,
     lscolors: &LsColors,
+    output: &mut impl Write,
 ) -> TreeRepresentation {
-    let mut current_level = render_tree_level(tree_entry, options, sizes, lscolors);
+    let mut current_level = render_tree_level(tree_entry, options, sizes, lscolors, output);
     let mut directories: u32 = 0;
     let mut files: u32 = 0;
     if let TreeChild::Children(children) = &tree_entry.children {
@@ -741,7 +771,7 @@ fn render_tree(
                 }
             }
 
-            let sub_representation = render_tree(child, options, sizes, lscolors);
+            let sub_representation = render_tree(child, options, sizes, lscolors, output);
             current_level += sub_representation.rendered.as_str();
             directories += sub_representation.directories;
             files += sub_representation.files;
@@ -1527,10 +1557,13 @@ drwxrwxr-x     └─uno
                 meta: Default::default(),
             };
             assert_eq!(
-                render_tree_level(&entry, &cli, &lengths, &lscolors),
+                render_tree_level_to_string(&entry, &cli, &lengths, &lscolors),
                 entry_presentation
             );
-            print!("{}", render_tree_level(&entry, &cli, &lengths, &lscolors));
+            print!(
+                "{}",
+                render_tree_level_to_string(&entry, &cli, &lengths, &lscolors)
+            );
         }
     }
 
@@ -1570,20 +1603,20 @@ drwxrwxr-x     └─uno
         };
 
         assert_eq!(
-            render_tree_level(&direntry, &cli_classify, &lengths, &lscolors),
+            render_tree_level_to_string(&direntry, &cli_classify, &lengths, &lscolors),
             "\n├─dirname/"
         );
         assert_eq!(
-            render_tree_level(&direntry, &cli_classify_not, &lengths, &lscolors),
+            render_tree_level_to_string(&direntry, &cli_classify_not, &lengths, &lscolors),
             "\n├─dirname"
         );
 
         assert_eq!(
-            render_tree_level(&fileentry, &cli_classify, &lengths, &lscolors),
+            render_tree_level_to_string(&fileentry, &cli_classify, &lengths, &lscolors),
             "\n├─filename"
         );
         assert_eq!(
-            render_tree_level(&fileentry, &cli_classify_not, &lengths, &lscolors),
+            render_tree_level_to_string(&fileentry, &cli_classify_not, &lengths, &lscolors),
             "\n├─filename"
         );
     }
@@ -1636,15 +1669,15 @@ drwxrwxr-x     └─uno
             },
         };
         assert_eq!(
-            render_tree_level(&fileentry, &cli_group_user, &lengths_too_small, &lscolors),
+            render_tree_level_to_string(&fileentry, &cli_group_user, &lengths_too_small, &lscolors),
             "\n42002469 -rw-r--r-- foouserfoogroup1337├─filename"
         );
         assert_eq!(
-            render_tree_level(&fileentry, &cli_group_user, &lengths_correct, &lscolors),
+            render_tree_level_to_string(&fileentry, &cli_group_user, &lengths_correct, &lscolors),
             "\n42002469 -rw-r--r-- foouser foogroup 1337 ├─filename"
         );
         assert_eq!(
-            render_tree_level(&fileentry, &cli_group_user, &lengths_too_big, &lscolors),
+            render_tree_level_to_string(&fileentry, &cli_group_user, &lengths_too_big, &lscolors),
             "\n42002469 -rw-r--r-- foouser    foogroup             1337            ├─filename"
         );
     }
@@ -1987,6 +2020,17 @@ drwxrwxr-x     └─uno
 
         assert_eq!("Test", string_from_opt_field(&test_struct.foo));
         assert_eq!("", string_from_opt_field(&test_struct.bar));
+    }
+
+    fn render_tree_level_to_string(
+        entry: &TreeEntry,
+        options: &Options,
+        sizes: &TreeEntryLengths,
+        lscolors: &LsColors,
+    ) -> String {
+        let mut out: Vec<u8> = Vec::new();
+        render_tree_level(entry, options, sizes, lscolors, &mut out);
+        String::from_utf8_lossy(&out).to_string()
     }
 
     /// Create a directory tree with a directory for which access is restricted.

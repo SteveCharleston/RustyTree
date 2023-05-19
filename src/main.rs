@@ -1,9 +1,11 @@
-use rustytree::tree;
-use rustytree::Options;
 use clap::Parser;
+use rustytree::tree_writer;
+use rustytree::Options;
+use std::io;
 
 fn main() {
     let cli = Options::parse();
+    let mut output = io::stdout();
 
-    println!("{}", tree(&cli.path, &cli));
+    tree_writer(&cli.path, &cli, &mut output);
 }
