@@ -3,6 +3,7 @@ use rustytree::tree_writer;
 use rustytree::Options;
 use std::io;
 
+#[cfg(not(tarpaulin_include))]
 fn main() {
     let cli = Options::parse();
     let mut output = io::stdout();
