@@ -17,7 +17,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use lscolors::{LsColors, Style};
 use rayon::prelude::*;
 use std::collections::HashSet;
-use std::fs::{DirEntry, Metadata};
+use std::fs::DirEntry;
 use std::io::BufRead;
 use std::io::Write;
 use std::os::unix::prelude::MetadataExt;
@@ -94,6 +94,10 @@ pub struct Options {
     #[clap(long)]
     /// Recursively sum the sizes of files and subdirectories and display that on a folder
     pub du: bool,
+
+    #[clap(short = 't', long)]
+    /// Determine the type of every file
+    pub filetype: bool,
 
     #[clap(short = 'P', long, value_parser = parse_pattern)]
     /// List only files that match the given pattern
@@ -211,12 +215,15 @@ struct TreeLevelMeta {
 
     /// Unique Identifier of the file or directory in form of InodeData
     inode: Option<InodeData>,
+
+    /// Type of the content inside the file
+    filetype: Option<String>,
 }
 
 impl TreeLevelMeta {
     /// Generate a new TreeLevelMeta from the given data metadata
-    fn from(metadata: &Result<Metadata, io::Error>, options: &Options) -> TreeLevelMeta {
-        let meta = match metadata {
+    fn from(path: &impl AsRef<Path>, options: &Options) -> TreeLevelMeta {
+        let meta = match fs::symlink_metadata(path) {
             Ok(m) => m,
             Err(_) => return TreeLevelMeta::default(),
         };
@@ -265,12 +272,34 @@ impl TreeLevelMeta {
             None
         };
 
+        let filetype = if options.filetype {
+            if meta.is_symlink() {
+                // Symlinks are not recognized so do it here
+                Some("inode/symlink".to_string())
+            } else {
+                // According to RFC-2046, unknown data is `application/octet-stream`
+                let generic_mime_type = "application/octet-stream";
+
+                // start with the most generic content type `all/all`
+                tree_magic::TYPE.hash.get("all/all").map_or_else(
+                    || Some(generic_mime_type.to_string()), // return generic if MIME DB doesn't exist
+                    |node| {
+                        tree_magic::from_filepath_node(*node, path.as_ref())
+                            .or(Some(generic_mime_type.to_string()))
+                    },
+                )
+            }
+        } else {
+            None
+        };
+
         TreeLevelMeta {
             chmods,
             user,
             group,
             size,
             inode,
+            filetype,
         }
     }
 }
@@ -295,6 +324,9 @@ struct TreeEntryLengths {
 
     /// Length of the longest size field
     size: usize,
+
+    /// Lenght of the longest filetype field
+    filetype: usize,
 }
 
 /// Hold the rendered tree as well as number of directories and files to generate the final status
@@ -572,6 +604,9 @@ fn render_tree_level(
         rendered_entry += "\n";
     }
 
+    if let Some(filetype) = &entry.meta.filetype {
+        rendered_entry += format!("{:width$}", filetype, width = sizes.filetype + 1).as_str();
+    }
     if let Some(inode_data) = &entry.meta.inode {
         rendered_entry += format!("{} ", inode_data.inode).as_str();
     }
@@ -715,7 +750,7 @@ pub fn tree_writer(path: &impl AsRef<Path>, options: &Options, output: &mut impl
         kind: TreeEntryKind::Directory,
         levels: indent_level.clone(),
         children: recurse_paths(path, &indent_level, options, &seen),
-        meta: TreeLevelMeta::from(&fs::metadata(path), options),
+        meta: TreeLevelMeta::from(&path, options),
     };
 
     if options.du {
@@ -735,6 +770,8 @@ pub fn tree_writer(path: &impl AsRef<Path>, options: &Options, output: &mut impl
         user: entry.longest_fieldentry(&|t: &TreeEntry| string_from_opt_field(&t.meta.user)),
         group: entry.longest_fieldentry(&|t: &TreeEntry| string_from_opt_field(&t.meta.group)),
         size: entry.longest_fieldentry(&size_func),
+        filetype: entry
+            .longest_fieldentry(&|t: &TreeEntry| string_from_opt_field(&t.meta.filetype)),
     };
 
     let full_representation = render_tree(&entry, options, &sizes, &lscolors, output);
@@ -845,7 +882,7 @@ fn recurse_paths(
                 },
                 levels: current_indent.to_vec(),
                 children: TreeChild::None,
-                meta: TreeLevelMeta::from(&entry.metadata(), options),
+                meta: TreeLevelMeta::from(&entry.path(), options),
             };
 
             if entry.path().is_dir()
@@ -1106,6 +1143,57 @@ mod tests {
         println!("{}", out_si);
         assert!(out_human.starts_with("4 KiB"));
         assert!(out_si.starts_with("4.10 kB"));
+    }
+
+    #[test]
+    /// Verify that filetypes are recognized
+    fn test_filetypes() {
+        let dir = create_directory_tree();
+        let cli = Options {
+            path: dir.path().to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            filetype: true,
+            ..Default::default()
+        };
+
+        let out = tree(&dir.path(), &cli);
+
+        println!("{}", out);
+        assert_eq!(
+            out,
+            format!(
+                "inode/directory {}{}",
+                dir.path().to_str().unwrap(),
+                expected_output_filetypes(),
+            )
+        );
+    }
+
+    #[test]
+    /// Verify that filetypes are recognized
+    fn test_filetypes_empty_symlink() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        std::os::unix::fs::symlink("target", tmpdir.path().join("dangling")).unwrap();
+
+        let cli = Options {
+            path: tmpdir.path().to_path_buf(),
+            nocolor: true,
+            filetype: true,
+            noreport: true,
+            ..Default::default()
+        };
+
+        let out = tree(&tmpdir.path(), &cli);
+        println!("{}", out);
+        assert_eq!(
+            out,
+            format!(
+                "inode/directory {}\n{}",
+                tmpdir.path().to_str().unwrap(),
+                "inode/symlink   └─dangling ➜ target"
+            )
+        );
     }
 
     #[test]
@@ -1640,16 +1728,19 @@ drwxrwxr-x     └─uno
             user: 0,
             group: 0,
             size: 0,
+            filetype: 0,
         };
         let lengths_correct = TreeEntryLengths {
             user: 7,
             group: 8,
             size: 4,
+            filetype: 0,
         };
         let lengths_too_big = TreeEntryLengths {
             user: 10,
             group: 20,
             size: 15,
+            filetype: 0,
         };
 
         let fileentry = TreeEntry {
@@ -1666,6 +1757,7 @@ drwxrwxr-x     └─uno
                     inode: 42002469,
                     dev: 12345678,
                 }),
+                filetype: None,
             },
         };
         assert_eq!(
@@ -1881,18 +1973,18 @@ drwxrwxr-x     └─uno
     /// Verify correct instantiation of a TreeLevelMeta struct from existing data.
     fn test_tree_level_meta_construct() {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
-        let meta = tmpdir.path().metadata();
+        let path = tmpdir.path();
 
         let options = Options {
             ..Default::default()
         };
 
-        let tree_level_meta = TreeLevelMeta::from(&meta, &options);
+        let tree_level_meta = TreeLevelMeta::from(&path, &options);
         assert_eq!(None, tree_level_meta.user);
         assert_eq!(None, tree_level_meta.group);
 
         let tree_level_meta = TreeLevelMeta::from(
-            &meta,
+            &path,
             &Options {
                 user: true,
                 ..Default::default()
@@ -1902,7 +1994,7 @@ drwxrwxr-x     └─uno
         assert_eq!(None, tree_level_meta.group);
 
         let tree_level_meta = TreeLevelMeta::from(
-            &meta,
+            &path,
             &Options {
                 group: true,
                 ..Default::default()
@@ -1912,7 +2004,7 @@ drwxrwxr-x     └─uno
         assert!(tree_level_meta.group.is_some());
 
         let tree_level_meta = TreeLevelMeta::from(
-            &meta,
+            &path,
             &Options {
                 user: true,
                 group: true,
@@ -1924,7 +2016,7 @@ drwxrwxr-x     └─uno
         assert!(tree_level_meta.group.is_some());
 
         let tree_level_meta = TreeLevelMeta::from(
-            &meta,
+            &path,
             &Options {
                 protections: true,
                 user: true,
@@ -1935,6 +2027,29 @@ drwxrwxr-x     └─uno
         assert!(tree_level_meta.chmods.is_some());
         assert!(tree_level_meta.user.is_some());
         assert!(tree_level_meta.group.is_some());
+    }
+
+    #[test]
+    /// Verify that dangling symlinks are handled and there metadata is extracted correctly.
+    fn test_tree_level_meta_dangling_symlink() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dangling = tmpdir.path().join("dangling");
+        std::os::unix::fs::symlink("target", &dangling).unwrap();
+
+        let tree_level_meta = TreeLevelMeta::from(
+            &dangling,
+            &Options {
+                protections: true,
+                user: true,
+                group: true,
+                filetype: true,
+                ..Default::default()
+            },
+        );
+        assert!(tree_level_meta.chmods.is_some());
+        assert!(tree_level_meta.user.is_some());
+        assert!(tree_level_meta.group.is_some());
+        assert_eq!(tree_level_meta.filetype.unwrap(), "inode/symlink");
     }
 
     #[test]
@@ -2466,6 +2581,47 @@ Meinung von Grund des Herzens aus gesagt. Vom Pult hätte er fallen müssen!").u
 26 B              ├─does.md
 27 B              ├─tres.txt
 25 B              └─uno.md"
+            .to_string();
+        output
+    }
+
+    /// The expected output for the directory tree tests with filetype identification
+    fn expected_output_filetypes() -> String {
+        let output: String = "
+text/plain      ├─bar.txt
+inode/directory ├─Desktop
+inode/directory ├─Downloads
+text/plain      │   ├─cargo_0.57.0-7+b1_amd64.deb
+text/plain      │   ├─cygwin.exe
+text/plain      │   └─rustc_1.60.0+dfsg1-1_amd64.deb
+text/plain      ├─foo.txt
+inode/directory ├─Music
+text/plain      │   ├─one.mp3
+text/plain      │   ├─three.mp3
+text/plain      │   └─two.mp3
+inode/directory ├─My Projects
+inode/directory ├─Pictures
+inode/directory │   ├─days
+text/plain      │   │   ├─evening.bmp
+text/plain      │   │   ├─morning.tiff
+text/plain      │   │   └─noon.svg
+text/plain      │   ├─hello.png
+inode/directory │   └─seasons
+text/plain      │       ├─autumn.jpg
+text/plain      │       ├─spring.gif
+text/plain      │       ├─summer.png
+text/plain      │       └─winter.png
+inode/directory └─Trash
+text/plain          ├─bar.md
+text/plain          ├─foo.txt
+inode/directory     └─old
+text/plain              ├─bar.txt
+text/plain              ├─baz.txt
+text/plain              ├─foo.md
+inode/directory         └─obsolete
+text/plain                  ├─does.md
+text/plain                  ├─tres.txt
+text/plain                  └─uno.md"
             .to_string();
         output
     }
