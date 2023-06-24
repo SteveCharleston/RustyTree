@@ -99,12 +99,16 @@ pub struct Options {
     /// Determine the type of every file
     pub filetype: bool,
 
+    #[clap(long, value_parser = parse_pattern)]
+    /// List only files that match the given filetype pattern, separate multiple patterns by pipe |
+    pub filtertype: Option<GlobSet>,
+
     #[clap(short = 'P', long, value_parser = parse_pattern)]
-    /// List only files that match the given pattern
+    /// List only files that match the given pattern, separate multiple patterns by pipe |
     pub pattern: Option<GlobSet>,
 
     #[clap(short = 'I', long, value_parser = parse_pattern)]
-    /// Do not files that match the given pattern
+    /// Do not files that match the given pattern, separate multiple patterns by pipe |
     pub inversepattern: Option<GlobSet>,
 
     #[clap(short = 'x', long)]
@@ -273,22 +277,7 @@ impl TreeLevelMeta {
         };
 
         let filetype = if options.filetype {
-            if meta.is_symlink() {
-                // Symlinks are not recognized so do it here
-                Some("inode/symlink".to_string())
-            } else {
-                // According to RFC-2046, unknown data is `application/octet-stream`
-                let generic_mime_type = "application/octet-stream";
-
-                // start with the most generic content type `all/all`
-                tree_magic::TYPE.hash.get("all/all").map_or_else(
-                    || Some(generic_mime_type.to_string()), // return generic if MIME DB doesn't exist
-                    |node| {
-                        tree_magic::from_filepath_node(*node, path.as_ref())
-                            .or(Some(generic_mime_type.to_string()))
-                    },
-                )
-            }
+            Some(determine_filetype(path, meta))
         } else {
             None
         };
@@ -402,7 +391,7 @@ fn out(text: &str, output: &mut impl Write) {
 fn read_dir(path: &impl AsRef<Path>, options: &Options) -> Result<Vec<DirEntry>, io::Error> {
     let mut paths: Vec<_> = fs::read_dir(path)?
         .collect::<Result<Vec<_>, _>>()? // collect stops upon error and saves that into Result
-        .into_iter() // if no error, simply loop over the dir contents
+        .into_par_iter() // if no error, simply loop over the dir contents
         .filter(|r| options.all || !r.file_name().to_string_lossy().starts_with('.')) // hidden
         .filter(|r| !options.dironly || r.path().is_dir()) // directories only
         .filter(|r| {
@@ -418,6 +407,23 @@ fn read_dir(path: &impl AsRef<Path>, options: &Options) -> Result<Vec<DirEntry>,
                     .inversepattern
                     .as_ref()
                     .map_or(true, |inverse| !inverse.is_match(r.file_name()))
+        })
+        .filter(|r| {
+            if r.path().is_dir() || options.filtertype.is_none() {
+                // filetype filtering is not requested
+                return true;
+            }
+
+            match r.metadata() {
+                //Ok(meta) => if let Some(filetypepattern) = &options.filtertype {
+                Ok(meta) => match &options.filtertype {
+                    Some(filetypepattern) => {
+                        filetypepattern.is_match(determine_filetype(&r.path(), meta))
+                    }
+                    None => false,
+                },
+                Err(_) => false, //filter files that we cannot read
+            }
         })
         .collect();
 
@@ -585,6 +591,26 @@ fn parse_pattern(arg: &str) -> Result<GlobSet, globset::Error> {
         globset.add(glob);
     }
     globset.build()
+}
+
+/// Calculate the filetype of a given file
+fn determine_filetype(path: &impl AsRef<Path>, meta: fs::Metadata) -> String {
+    if meta.is_symlink() {
+        // Symlinks are not recognized so do it here
+        "inode/symlink".to_string()
+    } else {
+        // According to RFC-2046, unknown data is `application/octet-stream`
+        let generic_mime_type = "application/octet-stream";
+
+        // start with the most generic content type `all/all`
+        tree_magic::TYPE.hash.get("all/all").map_or_else(
+            || generic_mime_type.to_string(), // return generic if MIME DB doesn't exist
+            |node| {
+                tree_magic::from_filepath_node(*node, path.as_ref())
+                    .unwrap_or(generic_mime_type.to_string())
+            },
+        )
+    }
 }
 
 /// Render the given TreeEntry into a string representation.
@@ -935,6 +961,7 @@ fn recurse_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
     use std::fs;
     use std::fs::File;
     use std::os::unix::prelude::PermissionsExt;
@@ -1194,6 +1221,82 @@ mod tests {
                 "inode/symlink   └─dangling ➜ target"
             )
         );
+    }
+
+    #[test]
+    fn test_filetypefilter() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let unfiltered_output = "
+inode/directory           ├─bar
+application/x-shellscript │   ├─one.rb
+text/x-python3            │   ├─three.py
+application/x-shellscript │   └─two.rb
+inode/directory           ├─baz
+application/x-shellscript │   └─three.rb
+inode/directory           └─foo
+text/x-python3                ├─one.py
+text/x-python3                └─two.py";
+
+        let cli = Options {
+            path: tmpdir.path().to_path_buf(),
+            nocolor: true,
+            filetype: true,
+            noreport: true,
+            filtertype: parse_pattern("*").ok(),
+            ..Default::default()
+        };
+
+        let cli_shell = Options {
+            path: tmpdir.path().to_path_buf(),
+            nocolor: true,
+            filetype: true,
+            noreport: true,
+            filtertype: parse_pattern("*shell*").ok(),
+            ..Default::default()
+        };
+
+        let cli_python = Options {
+            path: tmpdir.path().to_path_buf(),
+            nocolor: true,
+            filetype: true,
+            noreport: true,
+            filtertype: parse_pattern("*python*").ok(),
+            ..Default::default()
+        };
+
+        let dir = tmpdir.path();
+        fs::create_dir_all(dir.join("foo")).unwrap();
+        fs::create_dir_all(dir.join("bar")).unwrap();
+        fs::create_dir_all(dir.join("baz")).unwrap();
+
+        for pyfile in vec!["foo/one.py", "foo/two.py", "bar/three.py"] {
+            File::create(dir.join(pyfile)).unwrap();
+            fs::write(dir.join(pyfile), "#!/usr/bin/python3").unwrap();
+        }
+
+        for shfile in vec!["bar/one.rb", "bar/two.rb", "baz/three.rb"] {
+            File::create(dir.join(shfile)).unwrap();
+            fs::write(dir.join(shfile), "#!/bin/sh\n#foo bar\n#testcomment\n").unwrap();
+        }
+
+        let out = tree(&tmpdir.path(), &cli);
+        let out_shell = tree(&tmpdir.path(), &cli_shell);
+        let out_python = tree(&tmpdir.path(), &cli_python);
+        println!("{}", out);
+        assert_eq!(
+            out,
+            format!(
+                "inode/directory           {}{}",
+                tmpdir.path().to_str().unwrap(),
+                unfiltered_output,
+            )
+        );
+
+        assert_eq!(out_shell.matches("shellscript").count(), 3);
+        assert_eq!(out_shell.matches("python").count(), 0);
+
+        assert_eq!(out_python.matches("shellscript").count(), 0);
+        assert_eq!(out_python.matches("python").count(), 3);
     }
 
     #[test]

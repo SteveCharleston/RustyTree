@@ -10,6 +10,7 @@ ansi_term = "0.12"
 clap = { version = "3.2", features = ["derive", "wrap_help"] }
 globset = "0.4"
 humansize = "2.1"
+pretty_assertions = "1.3"
 tempfile = "3"
 rayon = "1.5"
 lscolors = "0.12"
