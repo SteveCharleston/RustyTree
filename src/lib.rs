@@ -779,6 +779,8 @@ pub fn tree_writer(path: &impl AsRef<Path>, options: &Options, output: &mut impl
         meta: TreeLevelMeta::from(&path, options),
     };
 
+    entry.children = recalc_tree_levels(&entry, &indent_level);
+
     if options.du {
         entry.meta.size = sum_children_sizes(&entry.children);
     }
@@ -801,9 +803,41 @@ pub fn tree_writer(path: &impl AsRef<Path>, options: &Options, output: &mut impl
     };
 
     let full_representation = render_tree(&entry, options, &sizes, &lscolors, output);
+
     if !options.noreport {
         out(&format!("\n\n{}", full_representation.statistics()), output);
     }
+}
+
+/// Levels of a TreeEntry might get messed up due to filtering, so calculate them correctly here.
+fn recalc_tree_levels(tree_entry: &TreeEntry, indent_level: &[TreeLevel]) -> TreeChild {
+    let new_children = if let TreeChild::Children(children) = &tree_entry.children {
+        let fixed_children = children
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let mut new_entry = entry.clone();
+                let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
+                let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
+                let is_last = i == children.len() - 1;
+                if is_last {
+                    current_indent.push(TreeLevel::TreeFinalBranch);
+                    recurisve_indent.push(TreeLevel::Indent);
+                } else {
+                    current_indent.push(TreeLevel::TreeBranch);
+                    recurisve_indent.push(TreeLevel::TreeBar);
+                };
+                new_entry.children = recalc_tree_levels(&new_entry, &recurisve_indent);
+                new_entry.levels = current_indent;
+                new_entry
+            })
+            .collect::<Vec<TreeEntry>>();
+        TreeChild::Children(fixed_children)
+    } else {
+        tree_entry.children.clone()
+    };
+
+    new_children
 }
 
 /// Generate a string representation of the nested TreeEntry data structure.
@@ -876,22 +910,13 @@ fn recurse_paths(
         Ok(entries) => entries,
         Err(io_err) => return TreeChild::Error(TreeError::IoError(io_err.kind())),
     };
-    // let entries = read_dir(path, options)?;
-    let entries_len = entries.len();
+
     let output = entries
         .into_par_iter()
-        .enumerate()
-        .map(|(i, entry)| {
-            let mut current_indent: Vec<TreeLevel> = indent_level.to_vec();
+        .map(|entry| {
             let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
-
-            if i == entries_len - 1 {
-                current_indent.push(TreeLevel::TreeFinalBranch);
-                recurisve_indent.push(TreeLevel::Indent);
-            } else {
-                current_indent.push(TreeLevel::TreeBranch);
-                recurisve_indent.push(TreeLevel::TreeBar);
-            };
+            // will be fixed later, so basically just count the depth here
+            recurisve_indent.push(TreeLevel::Indent);
 
             let mut tree_entry = TreeEntry {
                 name: entry.path(),
@@ -906,7 +931,7 @@ fn recurse_paths(
                 } else {
                     TreeEntryKind::File
                 },
-                levels: current_indent.to_vec(),
+                levels: recurisve_indent.to_vec(),
                 children: TreeChild::None,
                 meta: TreeLevelMeta::from(&entry.path(), options),
             };
