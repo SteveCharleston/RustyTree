@@ -111,6 +111,10 @@ pub struct Options {
     /// Do not files that match the given pattern, separate multiple patterns by pipe |
     pub inversepattern: Option<GlobSet>,
 
+    #[clap(long)]
+    /// Prune empty directories from the output
+    pub prune: bool,
+
     #[clap(short = 'x', long)]
     /// Stay on the filesystem of the given path
     pub xdev: bool,
@@ -956,6 +960,14 @@ fn recurse_paths(
                     tree_entry.children =
                         recurse_paths(&entry.path(), &recurisve_indent, options, &new_seen);
 
+                    if options.prune {
+                        if let TreeChild::Children(children_list) = &tree_entry.children {
+                            if children_list.is_empty() {
+                                return None; //filter empty directories
+                            }
+                        }
+                    }
+
                     if options.du {
                         tree_entry.meta.size = sum_children_sizes(&tree_entry.children)
                     }
@@ -1237,6 +1249,58 @@ mod tests {
                 tmpdir.path().to_str().unwrap(),
                 "inode/symlink   └─dangling ➜ target"
             )
+        );
+    }
+
+    #[test]
+    fn test_prune_empty_dirs() {
+        let dir = create_directory_tree();
+        let cli = Options {
+            path: dir.path().to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            prune: true,
+            ..Default::default()
+        };
+
+        let out = tree(&dir.path(), &cli);
+        println!("{}", out);
+        let expected_tree = "
+├─bar.txt
+├─Downloads
+│   ├─cargo_0.57.0-7+b1_amd64.deb
+│   ├─cygwin.exe
+│   └─rustc_1.60.0+dfsg1-1_amd64.deb
+├─foo.txt
+├─Music
+│   ├─one.mp3
+│   ├─three.mp3
+│   └─two.mp3
+├─Pictures
+│   ├─days
+│   │   ├─evening.bmp
+│   │   ├─morning.tiff
+│   │   └─noon.svg
+│   ├─hello.png
+│   └─seasons
+│       ├─autumn.jpg
+│       ├─spring.gif
+│       ├─summer.png
+│       └─winter.png
+└─Trash
+    ├─bar.md
+    ├─foo.txt
+    └─old
+        ├─bar.txt
+        ├─baz.txt
+        ├─foo.md
+        └─obsolete
+            ├─does.md
+            ├─tres.txt
+            └─uno.md";
+        assert_eq!(
+            out,
+            format!("{}{}", dir.path().to_str().unwrap(), expected_tree)
         );
     }
 
