@@ -276,7 +276,7 @@ impl TreeLevelMeta {
             None
         };
 
-        let filetype = if options.filetype {
+        let filetype = if options.filetype || options.filtertype.is_some() {
             Some(determine_filetype(path, meta))
         } else {
             None
@@ -407,23 +407,6 @@ fn read_dir(path: &impl AsRef<Path>, options: &Options) -> Result<Vec<DirEntry>,
                     .inversepattern
                     .as_ref()
                     .map_or(true, |inverse| !inverse.is_match(r.file_name()))
-        })
-        .filter(|r| {
-            if r.path().is_dir() || options.filtertype.is_none() {
-                // filetype filtering is not requested
-                return true;
-            }
-
-            match r.metadata() {
-                //Ok(meta) => if let Some(filetypepattern) = &options.filtertype {
-                Ok(meta) => match &options.filtertype {
-                    Some(filetypepattern) => {
-                        filetypepattern.is_match(determine_filetype(&r.path(), meta))
-                    }
-                    None => false,
-                },
-                Err(_) => false, //filter files that we cannot read
-            }
         })
         .collect();
 
@@ -630,8 +613,11 @@ fn render_tree_level(
         rendered_entry += "\n";
     }
 
-    if let Some(filetype) = &entry.meta.filetype {
-        rendered_entry += format!("{:width$}", filetype, width = sizes.filetype + 1).as_str();
+    if options.filetype {
+        // Metadata might also be set with filtertype
+        if let Some(filetype) = &entry.meta.filetype {
+            rendered_entry += format!("{:width$}", filetype, width = sizes.filetype + 1).as_str();
+        }
     }
     if let Some(inode_data) = &entry.meta.inode {
         rendered_entry += format!("{} ", inode_data.inode).as_str();
@@ -913,7 +899,7 @@ fn recurse_paths(
 
     let output = entries
         .into_par_iter()
-        .map(|entry| {
+        .filter_map(|entry| {
             let mut recurisve_indent: Vec<TreeLevel> = indent_level.to_vec();
             // will be fixed later, so basically just count the depth here
             recurisve_indent.push(TreeLevel::Indent);
@@ -974,9 +960,15 @@ fn recurse_paths(
                         tree_entry.meta.size = sum_children_sizes(&tree_entry.children)
                     }
                 }
+            } else if let Some(filetypepattern) = &options.filtertype {
+                if let Some(filetype) = &tree_entry.meta.filetype {
+                    if !filetypepattern.is_match(filetype) {
+                        return None; // filter the entry
+                    }
+                }
             }
 
-            tree_entry
+            Some(tree_entry)
         })
         .collect::<Vec<TreeEntry>>();
 
