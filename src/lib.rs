@@ -473,12 +473,8 @@ fn render_error(
         if !&levels.is_empty() {
             // iterate over the levels but omit last entry to draw error children correctly
             for level in &levels[..levels.len().saturating_sub(1)] {
-                // We will only ever face Indents or TreeBars here, so match isn't appropriate
-                if let TreeLevel::Indent = level {
-                    rendered_error += draw_character(level, &options.charset);
-                } else if let TreeLevel::TreeBar = level {
-                    rendered_error += draw_character(level, &options.charset);
-                }
+                // We will only ever face Indents or TreeBars here, so no need to transform
+                rendered_error += draw_character(level, &options.charset);
             }
 
             // If parent is last, just add some space to indent onto the next level, otherwise
