@@ -134,6 +134,10 @@ pub struct Options {
     #[clap(long)]
     /// Output the file contents
     pub cat: bool,
+
+    #[clap(long)]
+    /// Execute the given command with {} replaced as filename
+    pub exec: Option<String>,
 }
 
 /// Represent the different possible indentation components of a file.
@@ -509,6 +513,50 @@ fn render_size(size: u64, options: &Options) -> String {
     }
 }
 
+/// Execute a given command and return the command output.
+fn exec_file(
+    entry: &TreeEntry,
+    extra_indent: usize,
+    options: &Options,
+    output: &mut impl Write,
+) -> Result<String, io::Error> {
+    let cmd = match &options.exec {
+        Some(cmd) => cmd.replace("{}", entry.name.to_string_lossy().to_string().as_str()),
+        None => return Ok("".to_string()),
+    };
+
+    let cmd_shell_split = shell_words::split(cmd.as_str()).unwrap();
+    if let TreeEntryKind::File = entry.kind {
+        // Generate treebranches in front of every line
+        let mut rendered_content = String::new();
+        rendered_content += "\n";
+        rendered_content += calc_sub_entry_indent(entry, extra_indent, options).as_str();
+
+        let cmd_out = duct::cmd(
+            cmd_shell_split[0].clone(),
+            cmd_shell_split.get(1..).unwrap(),
+        );
+        let cmd_stdout = cmd_out.stderr_to_stdout().read()?;
+
+        for line in cmd_stdout.lines() {
+            if !line.is_empty() {
+                // remove control characters and avoid lines that would otherwise be empty or
+                // malformatted output from e.g. a line feed
+                let line = line.replace(|c: char| c.is_control(), "");
+
+                // if line was not empty before but now, we should skip it completly
+                if line.is_empty() {
+                    continue;
+                }
+            }
+
+            out(&rendered_content, output);
+            out(line, output);
+        }
+    }
+    Ok(cmd)
+}
+
 /// Read the contents of a file and return them.
 ///
 /// File contents that can be displayed will be returned, whereas non-printable lines will be
@@ -527,17 +575,7 @@ fn cat_file(
         // Generate treebranches in front of every line
         let mut rendered_content = String::new();
         rendered_content += "\n";
-
-        // handle noindent
-        rendered_content += " ".repeat(extra_indent).as_str();
-        for level in &entry.levels {
-            rendered_content += match level {
-                TreeLevel::Indent => draw_character(level, &options.charset),
-                TreeLevel::TreeBar => draw_character(level, &options.charset),
-                TreeLevel::TreeFinalBranch => draw_character(&TreeLevel::Indent, &options.charset),
-                TreeLevel::TreeBranch => draw_character(&TreeLevel::TreeBar, &options.charset),
-            }
-        }
+        rendered_content += calc_sub_entry_indent(entry, extra_indent, options).as_str();
 
         for line in reader.lines() {
             let line = match line {
@@ -574,6 +612,26 @@ fn parse_pattern(arg: &str) -> Result<GlobSet, globset::Error> {
         globset.add(glob);
     }
     globset.build()
+}
+
+/// Calculate the indent for content that is shown beneath an entry.
+fn calc_sub_entry_indent(entry: &TreeEntry, extra_indent: usize, options: &Options) -> String {
+    let mut rendered_content = String::new();
+    if !options.noindent {
+        rendered_content += " ".repeat(extra_indent).as_str();
+        for level in &entry.levels {
+            rendered_content += match level {
+                TreeLevel::Indent => draw_character(level, &options.charset),
+                TreeLevel::TreeBar => draw_character(level, &options.charset),
+                TreeLevel::TreeFinalBranch => draw_character(&TreeLevel::Indent, &options.charset),
+                TreeLevel::TreeBranch => draw_character(&TreeLevel::TreeBar, &options.charset),
+            }
+        }
+    } else {
+        rendered_content += draw_character(&TreeLevel::Indent, &options.charset);
+    }
+
+    rendered_content
 }
 
 /// Calculate the filetype of a given file
@@ -702,6 +760,24 @@ fn render_tree_level(
     }
 
     out(&rendered_entry, output);
+
+    if options.exec.is_some() {
+        if let TreeEntryKind::File = entry.kind {
+            match exec_file(entry, extra_indent, options, output) {
+                Ok(_) => (),
+                Err(error) => out(
+                    &render_error(
+                        "Cannot execute command",
+                        &TreeError::IoError(error.kind()),
+                        extra_indent,
+                        &entry.levels,
+                        options,
+                    ),
+                    output,
+                ),
+            };
+        }
+    }
 
     if options.cat {
         if let TreeEntryKind::File = entry.kind {
@@ -1437,6 +1513,132 @@ text/x-python3                └─two.py";
         let out = tree(&dir, &cli);
         print!("{out}");
         assert!(out.ends_with("└─testfile\n    line 1\n    line 3"))
+    }
+
+    #[test]
+    /// Verify that an external program tail -3 is executed correct with the filename as argument.
+    fn test_exec_tail_three() {
+        let dir = create_directory_tree_texts();
+        let cli = Options {
+            path: dir.path().to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            exec: Some("tail -3 {}".to_string()),
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir.path(), &cli);
+        print!("{out}");
+        assert_eq!(
+            out,
+            format!(
+                "{}{}",
+                dir.path().to_str().unwrap(),
+                expected_output_directory_tree_tail_three()
+            )
+        );
+    }
+
+    #[test]
+    /// Verify that a missing or unexecutable cmd generates an error message.
+    fn test_exec_missing_cmd() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+
+        fs::write(dir.join("testfile"), "").unwrap();
+
+        let cli = Options {
+            path: dir.to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            exec: Some("nonexisting {}".to_string()),
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir, &cli);
+        print!("{out}");
+        assert!(out.ends_with("    └─ [Cannot execute command: entity not found]"));
+    }
+
+    #[test]
+    /// Verify that a missing exec option leads to immediate return of exec_file.
+    fn test_exec_no_cmd() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+
+        let entry = TreeEntry {
+            name: dir.to_path_buf(),
+            kind: TreeEntryKind::File,
+            meta: TreeLevelMeta::default(),
+            levels: vec![],
+            children: TreeChild::None,
+        };
+        let mut out: Vec<u8> = Vec::new();
+        fs::write(dir.join("testfile"), "").unwrap();
+
+        let cli = Options {
+            path: dir.to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            exec: None,
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let output = exec_file(&entry, 0, &cli, &mut out).unwrap();
+
+        print!("{output}");
+        assert_eq!("", output);
+    }
+
+    #[test]
+    /// Verify that stderr and stdout are both visible in the output.
+    fn test_exec_stderr() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+
+        fs::write(dir.join("testfile"), "").unwrap();
+
+        let cli = Options {
+            path: dir.to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            exec: Some("perl -e 'STDOUT->autoflush(1); say STDOUT stdout; say STDERR stderr; say STDOUT stdout'".to_string()),
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir, &cli);
+        print!("{out}");
+        assert!(out.ends_with(
+            "
+└─testfile
+    stdout
+    stderr
+    stdout"
+        ));
+    }
+
+    #[test]
+    // Verify that for the noindent option only one indent is returned for sub entries.
+    fn test_calc_sub_entry_indent_noindent() {
+        let entry = TreeEntry {
+            name: PathBuf::from("foofile"),
+            kind: TreeEntryKind::File,
+            meta: TreeLevelMeta::default(),
+            levels: vec![],
+            children: TreeChild::None,
+        };
+
+        let cli = Options {
+            path: PathBuf::from("foodir"),
+            nocolor: true,
+            noreport: true,
+            noindent: true,
+            ..Default::default()
+        };
+        let output = calc_sub_entry_indent(&entry, 0, &cli);
+
+        print!("{output}");
+        assert_eq!(draw_character(&TreeLevel::Indent, &SignType::Ucs), output);
     }
 
     #[test]
@@ -2506,6 +2708,34 @@ Meinung von Grund des Herzens aus gesagt. Vom Pult hätte er fallen müssen!").u
 │           😳😄
 └─x_final.txt
     Das sollte ich bei meinem Chef versuchen; ich würde auf der Stelle hinausfliegen. Wer weiß
+    übrigens, ob das nicht sehr gut für mich wäre. Wenn ich mich nicht wegen meiner Eltern
+    zurückhielte, ich hätte längst gekündigt, ich wäre vor den Chef hin getreten und hätte ihm meine
+    Meinung von Grund des Herzens aus gesagt. Vom Pult hätte er fallen müssen!".to_string();
+
+        output
+    }
+
+    /// Output that should be generated when using the directory tree with tail -1.
+    fn expected_output_directory_tree_tail_three() -> String {
+        let output: String = "
+├─sub
+│   ├─empty.txt
+│   ├─normal.txt
+│   │   auf dessen Höhe sich die Bettdecke, zum gänzlichen Niedergleiten bereit, kaum
+│   │   noch erhalten konnte. Seine vielen, im Vergleich zu seinem sonstigen Umfang
+│   │   kläglich dünnen Beine flimmerten ihm hilflos vor den Augen.
+│   ├─normal_paragraphs.txt
+│   │   fand die juckende Stelle, die mit lauter kleinen weißen Pünktchen besetzt war, die er nicht zu
+│   │   beurteilen verstand; und wollte mit einem Bein die Stelle betasten, zog es aber gleich zurück, denn
+│   │   bei der Berührung umwehten ihn Kälteschauer.
+│   └─twosub
+│       ├─nonprintable_complete.txt
+│       ├─nonprintable_mixed_in.txt
+│       │   Wenn ich zum Beispiel im Laufe des Vormittags ins Gasthaus zurückgehe, um die erlangten
+│       │   Aufträge zu überschreiben, sitzen diese Herren erst beim Frühstück.
+│       └─printable_emojies.txt
+│           😳😄
+└─x_final.txt
     übrigens, ob das nicht sehr gut für mich wäre. Wenn ich mich nicht wegen meiner Eltern
     zurückhielte, ich hätte längst gekündigt, ich wäre vor den Chef hin getreten und hätte ihm meine
     Meinung von Grund des Herzens aus gesagt. Vom Pult hätte er fallen müssen!".to_string();
