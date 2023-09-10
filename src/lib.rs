@@ -135,9 +135,9 @@ pub struct Options {
     /// Output the file contents
     pub cat: bool,
 
-    #[clap(long)]
+    #[clap(long, value_parser = ExecCommand::from)]
     /// Execute the given command with {} replaced as filename
-    pub exec: Option<String>,
+    pub exec: Option<ExecCommand>,
 }
 
 /// Represent the different possible indentation components of a file.
@@ -230,6 +230,9 @@ struct TreeLevelMeta {
 
     /// Type of the content inside the file
     filetype: Option<String>,
+
+    /// External program output used on the file
+    exec: Option<Result<String, std::io::ErrorKind>>,
 }
 
 impl TreeLevelMeta {
@@ -285,9 +288,26 @@ impl TreeLevelMeta {
         };
 
         let filetype = if options.filetype || options.filtertype.is_some() {
-            Some(determine_filetype(path, meta))
+            Some(determine_filetype(path, meta.clone()))
         } else {
             None
+        };
+
+        let exec = match &options.exec {
+            Some(exec_command) if !meta.is_dir() => {
+                let mut cmd = exec_command.clone();
+                for argument in cmd.arguments.iter_mut() {
+                    if argument.contains("{}") {
+                        *argument = argument
+                            .replace("{}", path.as_ref().to_string_lossy().to_string().as_str());
+                    }
+                }
+                let cmd_expression = duct::cmd(cmd.command, cmd.arguments);
+
+                let cmd_out = cmd_expression.stderr_to_stdout().unchecked().read();
+                Some(cmd_out.map_err(|err| err.kind()))
+            }
+            _ => None,
         };
 
         TreeLevelMeta {
@@ -297,6 +317,7 @@ impl TreeLevelMeta {
             size,
             inode,
             filetype,
+            exec,
         }
     }
 }
@@ -372,6 +393,28 @@ enum TreeEntryKind {
     Directory,
     /// TreeEntry is a Symlink
     Symlink(Box<TreeEntryKind>),
+}
+
+#[derive(Clone, Debug)]
+/// Represent a system command that will be executed.
+pub struct ExecCommand {
+    /// The command to call with the arguments
+    pub command: String,
+    /// The arguments that are supplied to the given command
+    pub arguments: Vec<String>,
+}
+
+impl ExecCommand {
+    /// Take a command string and create a ExecCommand to be used for command execution.
+    fn from(arg: &str) -> Result<ExecCommand, shell_words::ParseError> {
+        let cmd_shell_split = shell_words::split(arg)?;
+        let cmd = cmd_shell_split.first();
+        let args = cmd_shell_split.get(1..);
+        Ok(ExecCommand {
+            command: cmd.unwrap_or(&String::from("")).to_string(),
+            arguments: args.unwrap_or(&[]).to_vec(),
+        })
+    }
 }
 
 /// Send the given text into the given writer.
@@ -513,32 +556,29 @@ fn render_size(size: u64, options: &Options) -> String {
     }
 }
 
-/// Execute a given command and return the command output.
-fn exec_file(
+/// Render the in-tree display of an executed command.
+fn render_exec(
     entry: &TreeEntry,
     extra_indent: usize,
     options: &Options,
     output: &mut impl Write,
 ) -> Result<String, io::Error> {
-    let cmd = match &options.exec {
-        Some(cmd) => cmd.replace("{}", entry.name.to_string_lossy().to_string().as_str()),
-        None => return Ok("".to_string()),
-    };
-
-    let cmd_shell_split = shell_words::split(cmd.as_str()).unwrap();
     if let TreeEntryKind::File = entry.kind {
         // Generate treebranches in front of every line
         let mut rendered_content = String::new();
         rendered_content += "\n";
         rendered_content += calc_sub_entry_indent(entry, extra_indent, options).as_str();
 
-        let cmd_out = duct::cmd(
-            cmd_shell_split[0].clone(),
-            cmd_shell_split.get(1..).unwrap(),
-        );
-        let cmd_stdout = cmd_out.stderr_to_stdout().read()?;
+        let cmd_out = if let Some(cmd_out_result) = &entry.meta.exec {
+            match cmd_out_result {
+                Ok(output) => output.clone(),
+                Err(error) => return Err(std::io::Error::from(*error)),
+            }
+        } else {
+            "".to_string()
+        };
 
-        for line in cmd_stdout.lines() {
+        for line in cmd_out.lines() {
             if !line.is_empty() {
                 // remove control characters and avoid lines that would otherwise be empty or
                 // malformatted output from e.g. a line feed
@@ -554,7 +594,7 @@ fn exec_file(
             out(line, output);
         }
     }
-    Ok(cmd)
+    Ok("".to_string()) // replace with output later on
 }
 
 /// Read the contents of a file and return them.
@@ -763,7 +803,7 @@ fn render_tree_level(
 
     if options.exec.is_some() {
         if let TreeEntryKind::File = entry.kind {
-            match exec_file(entry, extra_indent, options, output) {
+            match render_exec(entry, extra_indent, options, output) {
                 Ok(_) => (),
                 Err(error) => out(
                     &render_error(
@@ -1523,7 +1563,7 @@ text/x-python3                └─two.py";
             path: dir.path().to_path_buf(),
             nocolor: true,
             noreport: true,
-            exec: Some("tail -3 {}".to_string()),
+            exec: Some(ExecCommand::from("tail -3 {}").unwrap()),
             ..Default::default()
         };
         println!("tmpdir: {:?}", dir);
@@ -1540,6 +1580,54 @@ text/x-python3                └─two.py";
     }
 
     #[test]
+    /// Verify that an external program is executed correct when the filename contains a space.
+    fn test_exec_filename_spaces() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        fs::write(dir.join("test file"), "line 1\nline 2\nline 3\nline 4").unwrap();
+        let cli = Options {
+            path: dir.to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            exec: Some(ExecCommand::from("tail -3 {}").unwrap()),
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir, &cli);
+        print!("{out}");
+        assert_eq!(
+            out,
+            format!(
+                "{}{}",
+                dir.to_str().unwrap(),
+                "\n└─test file\n    line 2\n    line 3\n    line 4",
+            )
+        );
+    }
+
+    #[test]
+    /// Verify that external program output is correctly collected when it returns with error.
+    fn test_exec_errcode() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        fs::write(dir.join("test_file"), "line 1\nline 2\nline 3\nline 4").unwrap();
+        let cli = Options {
+            path: dir.to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            exec: Some(ExecCommand::from("false").unwrap()),
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir, &cli);
+        print!("{out}");
+        assert_eq!(
+            out,
+            format!("{}{}", dir.to_str().unwrap(), "\n└─test_file",)
+        );
+    }
+
+    #[test]
     /// Verify that a missing or unexecutable cmd generates an error message.
     fn test_exec_missing_cmd() {
         let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
@@ -1551,13 +1639,61 @@ text/x-python3                └─two.py";
             path: dir.to_path_buf(),
             nocolor: true,
             noreport: true,
-            exec: Some("nonexisting {}".to_string()),
+            exec: Some(ExecCommand::from("nonexisting {}").unwrap()),
             ..Default::default()
         };
         println!("tmpdir: {:?}", dir);
         let out = tree(&dir, &cli);
         print!("{out}");
         assert!(out.ends_with("    └─ [Cannot execute command: entity not found]"));
+    }
+
+    #[test]
+    /// Verify that a the filename is replaced multiple times.
+    fn test_exec_multiple_filename() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        let full_filename_path = format!("{}/{}", dir.as_os_str().to_string_lossy(), "testfile");
+
+        fs::write(dir.join("testfile"), "").unwrap();
+
+        let cli = Options {
+            path: dir.to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            exec: Some(ExecCommand::from("echo {} -- {}").unwrap()),
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir, &cli);
+        print!("{out}");
+        assert!(out.ends_with(format!("{} -- {}", full_filename_path, full_filename_path).as_str()));
+    }
+
+    #[test]
+    /// Verify that filename in quotes is properly replaced.
+    ///
+    /// Since we use shell_words to split the arguments like they would be split in a shell, it
+    /// might happen that filenames are contained in a longer argument with more text. It must be
+    /// ensured that filenames are replaced in all cases, even when surrounded by more text.
+    fn test_exec_multiple_filename_in_quotes() {
+        let tmpdir = tempfile::tempdir().expect("Trying to create a temporary directoy.");
+        let dir = tmpdir.path();
+        let full_filename_path = format!("{}/{}", dir.as_os_str().to_string_lossy(), "testfile");
+
+        fs::write(dir.join("testfile"), "").unwrap();
+
+        let cli = Options {
+            path: dir.to_path_buf(),
+            nocolor: true,
+            noreport: true,
+            exec: Some(ExecCommand::from("echo '{} -- {}'").unwrap()),
+            ..Default::default()
+        };
+        println!("tmpdir: {:?}", dir);
+        let out = tree(&dir, &cli);
+        print!("{out}");
+        assert!(out.ends_with(format!("{} -- {}", full_filename_path, full_filename_path).as_str()));
     }
 
     #[test]
@@ -1584,7 +1720,7 @@ text/x-python3                └─two.py";
             ..Default::default()
         };
         println!("tmpdir: {:?}", dir);
-        let output = exec_file(&entry, 0, &cli, &mut out).unwrap();
+        let output = render_exec(&entry, 0, &cli, &mut out).unwrap();
 
         print!("{output}");
         assert_eq!("", output);
@@ -1602,7 +1738,7 @@ text/x-python3                └─two.py";
             path: dir.to_path_buf(),
             nocolor: true,
             noreport: true,
-            exec: Some("perl -e 'STDOUT->autoflush(1); say STDOUT stdout; say STDERR stderr; say STDOUT stdout'".to_string()),
+            exec: Some(ExecCommand::from("perl -e 'STDOUT->autoflush(1); say STDOUT stdout; say STDERR stderr; say STDOUT stdout'").unwrap()),
             ..Default::default()
         };
         println!("tmpdir: {:?}", dir);
@@ -2140,6 +2276,7 @@ drwxrwxr-x     └─uno
                     dev: 12345678,
                 }),
                 filetype: None,
+                exec: None,
             },
         };
         assert_eq!(
