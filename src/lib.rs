@@ -9,12 +9,12 @@
 #![warn(clippy::missing_docs_in_private_items)]
 
 mod errors;
+pub mod options;
 
 use ansi_term::Color;
-use clap::Parser;
 use errors::TreeError;
-use globset::{Glob, GlobSet, GlobSetBuilder};
 use lscolors::{LsColors, Style};
+use options::{Options, SignType};
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs::DirEntry;
@@ -23,122 +23,6 @@ use std::io::Write;
 use std::os::unix::prelude::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
-
-#[derive(Debug, Default, Parser)]
-#[clap(
-    about = "List contents of directories in a tree-like format",
-    author = "Steven Schalhorn <steven@schalhorn.org>"
-)]
-/// Arguments to the application.
-pub struct Options {
-    #[clap(default_value = ".", value_parser)]
-    /// Path to the directory to traverse into
-    pub path: PathBuf,
-
-    #[clap(short = 'F', long)]
-    /// Append a `/' for directories
-    pub classify: bool,
-
-    #[clap(short = 'n', long)]
-    /// Turn colorization off
-    pub nocolor: bool,
-
-    #[clap(short = 'f', long)]
-    /// Print the full path prefix for each file
-    pub fullpath: bool,
-
-    #[clap(short = 'i', long)]
-    /// Do not print indentation and tree lines
-    pub noindent: bool,
-
-    #[clap(short = 'a', long)]
-    /// Print hidden files as well
-    pub all: bool,
-
-    #[clap(short = 'd', long)]
-    /// List directories only
-    pub dironly: bool,
-
-    #[clap(short = 'L', long)]
-    /// Maximal depth of the directory tree
-    pub level: Option<usize>,
-
-    #[clap(short = 'p', long)]
-    /// Print the group name or GID
-    pub protections: bool,
-
-    #[clap(short = 'g', long)]
-    /// Print the group name or GID
-    pub group: bool,
-
-    #[clap(short = 'u', long)]
-    /// Print the username name or UID
-    pub user: bool,
-
-    #[clap(long)]
-    /// Omit the file and directory report at the end of the tree
-    pub noreport: bool,
-
-    #[clap(short = 's', long)]
-    /// Show the size of a file or colelctively of all subfiles of a directory
-    pub sizes: bool,
-
-    #[clap(long)]
-    /// Print the sizes in a human readable way
-    pub humansize: bool,
-
-    #[clap(long)]
-    /// Print the sizes in a human readable way with SI sizes
-    pub si: bool,
-
-    #[clap(long)]
-    /// Recursively sum the sizes of files and subdirectories and display that on a folder
-    pub du: bool,
-
-    #[clap(short = 't', long)]
-    /// Determine the type of every file
-    pub filetype: bool,
-
-    #[clap(long, value_parser = parse_pattern)]
-    /// List only files that match the given filetype pattern, separate multiple patterns by pipe |
-    pub filtertype: Option<GlobSet>,
-
-    #[clap(short = 'P', long, value_parser = parse_pattern)]
-    /// List only files that match the given pattern, separate multiple patterns by pipe |
-    pub pattern: Option<GlobSet>,
-
-    #[clap(short = 'I', long, value_parser = parse_pattern)]
-    /// Do not files that match the given pattern, separate multiple patterns by pipe |
-    pub inversepattern: Option<GlobSet>,
-
-    #[clap(long)]
-    /// Prune empty directories from the output
-    pub prune: bool,
-
-    #[clap(short = 'x', long)]
-    /// Stay on the filesystem of the given path
-    pub xdev: bool,
-
-    #[clap(long)]
-    /// Print the inode number of the file or directory
-    pub inode: bool,
-
-    #[clap(short = 'l', long)]
-    /// Follow symbolic links into directories
-    pub followlinks: bool,
-
-    #[clap(value_enum, short = 'S', long, default_value_t=SignType::Ucs)]
-    /// Follow symbolic links into directories
-    pub charset: SignType,
-
-    #[clap(long)]
-    /// Output the file contents
-    pub cat: bool,
-
-    #[clap(long, value_parser = ExecCommand::from)]
-    /// Execute the given command with {} replaced as filename
-    pub exec: Option<ExecCommand>,
-}
 
 /// Represent the different possible indentation components of a file.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -151,16 +35,6 @@ enum TreeLevel {
     TreeBranch,
     /// In front of a file or dir if it is the last
     TreeFinalBranch,
-}
-
-/// Used to encode how the tree lines should be drawn
-#[derive(clap::ValueEnum, Clone, Debug, Default)]
-pub enum SignType {
-    /// Unicode Characters
-    #[default]
-    Ucs,
-    /// ASCII Characters
-    Ascii,
 }
 
 /// Represent a file with all necessary accompanying metadata.
@@ -395,28 +269,6 @@ enum TreeEntryKind {
     Symlink(Box<TreeEntryKind>),
 }
 
-#[derive(Clone, Debug)]
-/// Represent a system command that will be executed.
-pub struct ExecCommand {
-    /// The command to call with the arguments
-    pub command: String,
-    /// The arguments that are supplied to the given command
-    pub arguments: Vec<String>,
-}
-
-impl ExecCommand {
-    /// Take a command string and create a ExecCommand to be used for command execution.
-    fn from(arg: &str) -> Result<ExecCommand, shell_words::ParseError> {
-        let cmd_shell_split = shell_words::split(arg)?;
-        let cmd = cmd_shell_split.first();
-        let args = cmd_shell_split.get(1..);
-        Ok(ExecCommand {
-            command: cmd.unwrap_or(&String::from("")).to_string(),
-            arguments: args.unwrap_or(&[]).to_vec(),
-        })
-    }
-}
-
 /// Send the given text into the given writer.
 ///
 /// Handle common errors that might be encountered when doing I/O. Especially a broken pipe is no
@@ -639,19 +491,6 @@ fn cat_file(
         }
     }
     Ok(())
-}
-
-/// Take a list of Glob pattern and create a GlobSet out of them.
-///
-/// The list of pattern is separated by a pipe symbol '|' and all supplied patterns are stored in
-/// the GlobSet. In case of a wrong pattern we will get an error that describes the problem.
-fn parse_pattern(arg: &str) -> Result<GlobSet, globset::Error> {
-    let mut globset = GlobSetBuilder::new();
-    for sub_glob in arg.split('|') {
-        let glob = Glob::new(sub_glob)?;
-        globset.add(glob);
-    }
-    globset.build()
 }
 
 /// Calculate the indent for content that is shown beneath an entry.
@@ -1102,6 +941,7 @@ fn recurse_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use options::{parse_pattern, ExecCommand};
     use pretty_assertions::assert_eq;
     use std::fs;
     use std::fs::File;

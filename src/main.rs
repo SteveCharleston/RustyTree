@@ -1,6 +1,6 @@
 use clap::Parser;
 use rustytree::tree_writer;
-use rustytree::Options;
+use rustytree::options::Options;
 use std::io;
 
 #[cfg(not(tarpaulin_include))]
