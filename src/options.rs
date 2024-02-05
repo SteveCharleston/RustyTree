@@ -1,7 +1,7 @@
 //! Collect all functions and structs that are used to parse the command line arguments.
 use clap::Parser;
-use std::path::PathBuf;
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use std::path::PathBuf;
 
 #[derive(Debug, Default, Parser)]
 #[clap(
@@ -118,6 +118,7 @@ pub struct Options {
     /// Execute the given command with {} replaced as filename
     pub exec: Option<ExecCommand>,
 }
+
 ///
 /// Take a list of Glob pattern and create a GlobSet out of them.
 ///
@@ -131,7 +132,6 @@ pub fn parse_pattern(arg: &str) -> Result<GlobSet, globset::Error> {
     }
     globset.build()
 }
-
 
 /// Used to encode how the tree lines should be drawn
 #[derive(clap::ValueEnum, Clone, Debug, Default)]

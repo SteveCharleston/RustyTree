@@ -9,12 +9,14 @@
 #![warn(clippy::missing_docs_in_private_items)]
 
 mod errors;
-pub mod options;
+mod options;
+mod fixtures;
 
 use ansi_term::Color;
 use errors::TreeError;
 use lscolors::{LsColors, Style};
-use options::{Options, SignType};
+pub use options::Options;
+use options::SignType;
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs::DirEntry;
@@ -947,6 +949,7 @@ mod tests {
     use std::fs::File;
     use std::os::unix::prelude::PermissionsExt;
     use tempfile;
+    use fixtures::*;
 
     #[test]
     /// Verify that a generated filesystem tree is as expected with hidden files.
