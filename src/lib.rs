@@ -9,8 +9,9 @@
 #![warn(clippy::missing_docs_in_private_items)]
 
 mod errors;
-mod options;
 mod fixtures;
+mod options;
+mod tree_elements;
 
 use ansi_term::Color;
 use errors::TreeError;
@@ -23,253 +24,12 @@ use std::fs::DirEntry;
 use std::io::BufRead;
 use std::io::Write;
 use std::os::unix::prelude::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{fs, io};
-
-/// Represent the different possible indentation components of a file.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-enum TreeLevel {
-    /// Indentation if no parent exists
-    Indent,
-    /// Bar if a parent exists
-    TreeBar,
-    /// In front of a file or dir if it is not the last
-    TreeBranch,
-    /// In front of a file or dir if it is the last
-    TreeFinalBranch,
-}
-
-/// Represent a file with all necessary accompanying metadata.
-#[derive(Clone, Debug)]
-struct TreeEntry {
-    /// Name of the current file or directory
-    name: PathBuf,
-
-    /// Save kind of entry to display it differently
-    kind: TreeEntryKind,
-
-    /// Metadata about the file or directory
-    meta: TreeLevelMeta,
-
-    /// List of different levels of parent directories up to the root
-    levels: Vec<TreeLevel>,
-
-    /// List of child entries to enable a recursive data structure
-    children: TreeChild,
-}
-
-impl TreeEntry {
-    /// Calculate the length of the longest field.
-    ///
-    /// Goes through the whole tree and subtrees and looks at the given field for every node to
-    /// determine the length of the longest entry. Return those length to enable better formatting
-    /// with this information.
-    fn longest_fieldentry(
-        &self,
-        get_field: &(dyn Fn(&TreeEntry) -> String + Send + Sync),
-    ) -> usize {
-        let field_length = get_field(self).len(); // if conversation overflows, only
-                                                  // formatting will be affected
-
-        // maybe a match would be better suited, but this looks cleaner
-        let child_max = if let TreeChild::Children(children) = &self.children {
-            children
-                .par_iter()
-                .map(|child| child.longest_fieldentry(&get_field))
-                .max()
-                .unwrap_or_default()
-        } else {
-            0
-        };
-
-        field_length.max(child_max)
-    }
-}
-
-#[derive(Clone, Default, Debug)]
-/// Store metadata about a TreeEntry.
-struct TreeLevelMeta {
-    /// Chmods of file or directory
-    chmods: Option<u32>,
-
-    /// Username of file or directory
-    user: Option<String>,
-
-    /// Group name of file or directory
-    group: Option<String>,
-
-    /// Size of file or collectively of all subfiles of a directory
-    size: Option<u64>,
-
-    /// Unique Identifier of the file or directory in form of InodeData
-    inode: Option<InodeData>,
-
-    /// Type of the content inside the file
-    filetype: Option<String>,
-
-    /// External program output used on the file
-    exec: Option<Result<String, std::io::ErrorKind>>,
-}
-
-impl TreeLevelMeta {
-    /// Generate a new TreeLevelMeta from the given data metadata
-    fn from(path: &impl AsRef<Path>, options: &Options) -> TreeLevelMeta {
-        let meta = match fs::symlink_metadata(path) {
-            Ok(m) => m,
-            Err(_) => return TreeLevelMeta::default(),
-        };
-        let chmods = if options.protections {
-            Some(meta.mode())
-        } else {
-            None
-        };
-
-        let user = if options.user {
-            Some(
-                users::get_user_by_uid(meta.uid())
-                    .unwrap()
-                    .name()
-                    .to_string_lossy()
-                    .to_string(),
-            )
-        } else {
-            None
-        };
-
-        let group = if options.group {
-            Some(
-                users::get_group_by_gid(meta.gid())
-                    .unwrap()
-                    .name()
-                    .to_string_lossy()
-                    .to_string(),
-            )
-        } else {
-            None
-        };
-
-        let size = if options.sizes || options.humansize || options.si || options.du {
-            Some(meta.len())
-        } else {
-            None
-        };
-
-        let inode = if options.inode {
-            Some(InodeData {
-                inode: meta.ino(),
-                dev: meta.dev(),
-            })
-        } else {
-            None
-        };
-
-        let filetype = if options.filetype || options.filtertype.is_some() {
-            Some(determine_filetype(path, meta.clone()))
-        } else {
-            None
-        };
-
-        let exec = match &options.exec {
-            Some(exec_command) if !meta.is_dir() => {
-                let mut cmd = exec_command.clone();
-                for argument in cmd.arguments.iter_mut() {
-                    if argument.contains("{}") {
-                        *argument = argument
-                            .replace("{}", path.as_ref().to_string_lossy().to_string().as_str());
-                    }
-                }
-                let cmd_expression = duct::cmd(cmd.command, cmd.arguments);
-
-                let cmd_out = cmd_expression.stderr_to_stdout().unchecked().read();
-                Some(cmd_out.map_err(|err| err.kind()))
-            }
-            _ => None,
-        };
-
-        TreeLevelMeta {
-            chmods,
-            user,
-            group,
-            size,
-            inode,
-            filetype,
-            exec,
-        }
-    }
-}
-
-/// Make a file uniquely identifiable with the combinaiton of inode and dev
-#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
-struct InodeData {
-    /// Inode number on the filesystem
-    inode: u64,
-    /// ID of the device that contains the file
-    dev: u64,
-}
-
-/// Cache the lengths of some TreeEntry fields to avoid recalculating them during drawing.
-#[derive(Default)]
-struct TreeEntryLengths {
-    /// Length of the longest user field
-    user: usize,
-
-    /// Length of the longest group field
-    group: usize,
-
-    /// Length of the longest size field
-    size: usize,
-
-    /// Lenght of the longest filetype field
-    filetype: usize,
-}
-
-/// Hold the rendered tree as well as number of directories and files to generate the final status
-/// line.
-#[derive(Clone, Debug)]
-struct TreeRepresentation {
-    /// Final rendered string representation of the tree
-    rendered: String,
-    /// Number of directories in the rendered tree
-    directories: u32,
-    /// Number of files in the rendered tree
-    files: u32,
-    /// Size of all files combined, if requested
-    size: Option<String>,
-}
-
-impl TreeRepresentation {
-    /// Format information about number of directories, files and possible size as report string.
-    fn statistics(&self) -> String {
-        format!(
-            "{}{} directories, {} files",
-            self.size.as_ref().unwrap_or(&"".to_string()),
-            self.directories,
-            self.files,
-        )
-    }
-}
-
-/// Represent the possible states of a subdirectory or alternatives in case of error or no dir.
-#[derive(Clone, Debug)]
-enum TreeChild {
-    /// No children exist or have been read yet
-    None,
-    /// Directory couldn't be accessed for some reason
-    Error(errors::TreeError),
-    /// The expected child entries
-    Children(Vec<TreeEntry>),
-}
-
-/// Represent which kind of file a TreeEntry is.
-#[derive(Clone, Debug)]
-enum TreeEntryKind {
-    /// TreeEntry is a regular file
-    File,
-    /// TreeEntry is a Directory
-    Directory,
-    /// TreeEntry is a Symlink
-    Symlink(Box<TreeEntryKind>),
-}
+use tree_elements::{
+    InodeData, TreeChild, TreeEntry, TreeEntryKind, TreeEntryLengths, TreeLevel, TreeLevelMeta,
+    TreeRepresentation,
+};
 
 /// Send the given text into the given writer.
 ///
@@ -943,13 +703,14 @@ fn recurse_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // use fixtures::*;
     use options::{parse_pattern, ExecCommand};
     use pretty_assertions::assert_eq;
     use std::fs;
     use std::fs::File;
     use std::os::unix::prelude::PermissionsExt;
+    use std::path::{Path, PathBuf};
     use tempfile;
-    use fixtures::*;
 
     #[test]
     /// Verify that a generated filesystem tree is as expected with hidden files.
