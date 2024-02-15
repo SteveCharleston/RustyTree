@@ -12,6 +12,7 @@ mod errors;
 mod fixtures;
 mod options;
 mod tree_elements;
+mod renderers;
 
 use ansi_term::Color;
 use errors::TreeError;
