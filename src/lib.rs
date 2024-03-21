@@ -117,7 +117,7 @@ fn render_error(
     error_description: &str,
     error_kind: &TreeError,
     extra_indent: usize,
-    levels: &Vec<TreeLevel>,
+    levels: &[TreeLevel],
     options: &Options,
 ) -> String {
     let mut rendered_error = String::new();
